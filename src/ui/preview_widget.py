@@ -11,6 +11,8 @@ from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QRect
 from PyQt6.QtGui import QPainter, QPixmap, QColor, QFont, QPen, QBrush
 
 from ..core.media_analyzer import MediaAnalyzer
+from ..audio.audio_engine import AudioEngine
+from ..audio.pygame_audio_engine import PygameAudioEngine
 
 class PreviewWidget(QWidget):
     """프리뷰 위젯"""
@@ -43,6 +45,17 @@ class PreviewWidget(QWidget):
         self.current_media_path = None
         self.current_media_info = None
         self.current_timeline_clips = []
+        
+        # 오디오 엔진 (pygame 버전 우선 사용)
+        try:
+            self.audio_engine = PygameAudioEngine()
+            print("Pygame 오디오 엔진 사용")
+        except Exception as e:
+            print(f"Pygame 오디오 엔진 실패, PyQt6 사용: {e}")
+            self.audio_engine = AudioEngine()
+        
+        self.audio_engine.position_changed.connect(self._on_audio_position_changed)
+        self.audio_engine.state_changed.connect(self._on_audio_state_changed)
         
         self.init_ui()
         
@@ -131,6 +144,21 @@ class PreviewWidget(QWidget):
         self.speed_label = QLabel("1.0x")
         self.speed_label.setMinimumWidth(35)
         layout.addWidget(self.speed_label)
+        
+        layout.addWidget(QLabel("|"))
+        
+        # 볼륨 컨트롤
+        layout.addWidget(QLabel("볼륨:"))
+        self.volume_slider = QSlider(Qt.Orientation.Horizontal)
+        self.volume_slider.setRange(0, 100)
+        self.volume_slider.setValue(100)  # 100%
+        self.volume_slider.setMaximumWidth(80)
+        self.volume_slider.valueChanged.connect(self.change_volume)
+        layout.addWidget(self.volume_slider)
+        
+        self.volume_label = QLabel("100%")
+        self.volume_label.setMinimumWidth(35)
+        layout.addWidget(self.volume_label)
         
         layout.addStretch()
         
@@ -261,6 +289,20 @@ class PreviewWidget(QWidget):
         self.is_playing = True
         self.play_button.setText("⏸")
         
+        # 오디오 재생 (현재 미디어가 오디오인 경우)
+        if (self.current_media_info and 
+            self.current_media_info['media_type'] == 'audio' and 
+            self.current_media_path):
+            
+            # 오디오 파일 로드 및 재생
+            if self.audio_engine.current_file != self.current_media_path:
+                self.audio_engine.load_file(self.current_media_path)
+            
+            # 현재 프레임에 맞는 시간으로 이동
+            position_ms = int((self.current_frame / self.fps) * 1000)
+            self.audio_engine.set_position(position_ms)
+            self.audio_engine.play()
+        
         # 타이머 간격 계산 (속도 고려)
         interval = int(1000 / (self.fps * self.playback_speed))
         self.play_timer.start(interval)
@@ -273,11 +315,15 @@ class PreviewWidget(QWidget):
         self.play_button.setText("▶")
         self.play_timer.stop()
         
+        # 오디오 일시정지
+        self.audio_engine.pause()
+        
         self.play_state_changed.emit(False)
         
     def stop(self):
         """재생 정지"""
         self.pause()
+        self.audio_engine.stop()
         self.seek_to_frame(0)
         
     def advance_frame(self):
@@ -313,6 +359,14 @@ class PreviewWidget(QWidget):
     def seek_to_frame(self, frame):
         """지정된 프레임으로 이동"""
         self.current_frame = max(0, min(frame, self.total_frames - 1))
+        
+        # 오디오 위치 동기화
+        if (self.current_media_info and 
+            self.current_media_info['media_type'] == 'audio' and 
+            self.audio_engine.current_file):
+            position_ms = int((self.current_frame / self.fps) * 1000)
+            self.audio_engine.set_position(position_ms)
+        
         self.update_time_display()
         self.preview_frame.update()
         self.frame_changed.emit(self.current_frame)
@@ -340,6 +394,13 @@ class PreviewWidget(QWidget):
         if self.is_playing:
             interval = int(1000 / (self.fps * self.playback_speed))
             self.play_timer.start(interval)
+            
+    def change_volume(self, value):
+        """볼륨 변경"""
+        volume = value / 100.0
+        self.volume_label.setText(f"{value}%")
+        self.audio_engine.set_volume(volume)
+        print(f"볼륨 설정: {value}%")
             
     def toggle_safe_zone(self, checked):
         """Safe Zone 표시 토글"""
@@ -431,6 +492,24 @@ class PreviewWidget(QWidget):
             
         self.update_time_display()
         self.preview_frame.update()
+        
+    def _on_audio_position_changed(self, position_ms):
+        """오디오 위치 변경 이벤트"""
+        if self.is_playing and self.current_media_info and self.current_media_info['media_type'] == 'audio':
+            # 오디오 위치에 맞춰 프레임 동기화
+            new_frame = int((position_ms / 1000.0) * self.fps)
+            if abs(new_frame - self.current_frame) > 2:  # 2프레임 이상 차이날 때만 동기화
+                self.current_frame = new_frame
+                self.frame_changed.emit(self.current_frame)
+                self.update_time_display()
+                
+    def _on_audio_state_changed(self, state):
+        """오디오 상태 변경 이벤트"""
+        # QMediaPlayer.PlaybackState와 동기화
+        from PyQt6.QtMultimedia import QMediaPlayer
+        if state == QMediaPlayer.PlaybackState.StoppedState:
+            if self.is_playing:  # 오디오가 끝났으면 재생 정지
+                self.pause()
         
     def keyPressEvent(self, event):
         """키보드 이벤트"""
@@ -529,18 +608,31 @@ class PreviewFrame(QFrame):
         
     def draw_dummy_video(self, painter, rect):
         """더미 비디오 프레임 그리기"""
-        # 그라데이션 배경
-        painter.fillRect(rect, QColor(60, 60, 60))
+        # 그라데이션 배경 (체크보드 패턴)
+        painter.fillRect(rect, QColor(40, 40, 40))
+        
+        # 체크보드 패턴 그리기
+        check_size = 20
+        for x in range(0, rect.width(), check_size * 2):
+            for y in range(0, rect.height(), check_size * 2):
+                check_rect = QRect(rect.x() + x, rect.y() + y, check_size, check_size)
+                painter.fillRect(check_rect, QColor(60, 60, 60))
+                check_rect = QRect(rect.x() + x + check_size, rect.y() + y + check_size, check_size, check_size)
+                painter.fillRect(check_rect, QColor(60, 60, 60))
         
         # 중앙에 플레이스홀더 텍스트
         painter.setPen(QPen(QColor(200, 200, 200)))
-        font = QFont("Arial", 16)
+        font = QFont("Arial", 18, QFont.Weight.Bold)
         painter.setFont(font)
-        painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, "영상 미리보기")
+        painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, "📽️ 영상 미리보기")
         
         # 프레임 번호 표시
-        frame_text = f"Frame: {getattr(self.parent(), 'current_frame', 0)}"
-        painter.drawText(rect.adjusted(10, 10, -10, -10), Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft, frame_text)
+        parent_widget = self.parent()
+        if hasattr(parent_widget, 'current_frame'):
+            frame_text = f"Frame: {parent_widget.current_frame}"
+            font = QFont("Arial", 12)
+            painter.setFont(font)
+            painter.drawText(rect.adjusted(10, 10, -10, -10), Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft, frame_text)
         
     def draw_safe_zone(self, painter, rect):
         """Safe Zone 그리기"""
@@ -630,17 +722,26 @@ class PreviewFrame(QFrame):
                 x = rect.x() + (rect.width() - scaled_pixmap.width()) // 2
                 y = rect.y() + (rect.height() - scaled_pixmap.height()) // 2
                 painter.drawPixmap(x, y, scaled_pixmap)
+                
+                # 프레임 번호 오버레이
+                painter.setPen(QPen(QColor(255, 255, 255, 200)))
+                font = QFont("Arial", 12)
+                painter.setFont(font)
+                frame_text = f"Frame: {self.current_frame}"
+                painter.drawText(rect.adjusted(10, 10, -10, -10), 
+                               Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft, 
+                               frame_text)
             else:
-                self.draw_placeholder(painter, rect, "이미지 로드 실패")
+                self.draw_placeholder(painter, rect, f"이미지: {os.path.basename(self.current_media_path)}")
         except Exception as e:
-            self.draw_placeholder(painter, rect, f"이미지 오류: {str(e)}")
+            print(f"이미지 프레임 그리기 오류: {e}")
+            self.draw_placeholder(painter, rect, f"이미지 로드 실패")
             
     def draw_video_frame(self, painter, rect):
         """비디오 프레임 그리기 (썸네일 기반)"""
         try:
-            # 썸네일 생성 시도
-            time_seconds = self.current_frame / self.current_media_info.get('fps', 30)
-            thumbnail_path = MediaAnalyzer.get_thumbnail_path(self.current_media_path, time_seconds)
+            # 첫 번째 프레임 (0초)의 썸네일 우선 시도
+            thumbnail_path = MediaAnalyzer.get_thumbnail_path(self.current_media_path, 0.0)
             
             if thumbnail_path and os.path.exists(thumbnail_path):
                 pixmap = QPixmap(thumbnail_path)
@@ -656,50 +757,152 @@ class PreviewFrame(QFrame):
                     x = rect.x() + (rect.width() - scaled_pixmap.width()) // 2
                     y = rect.y() + (rect.height() - scaled_pixmap.height()) // 2
                     painter.drawPixmap(x, y, scaled_pixmap)
-                    return
                     
-            # 썸네일 로드 실패시 플레이스홀더
-            self.draw_placeholder(painter, rect, f"비디오 프레임 {self.current_frame}")
+                    # 프레임 번호 오버레이
+                    painter.setPen(QPen(QColor(255, 255, 255, 200)))
+                    font = QFont("Arial", 12)
+                    painter.setFont(font)
+                    frame_text = f"Frame: {self.current_frame}"
+                    painter.drawText(rect.adjusted(10, 10, -10, -10), 
+                                   Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft, 
+                                   frame_text)
+                    return
+            
+            # 썸네일이 없으면 비디오 파일을 직접 이미지로 읽기 시도
+            if self.try_load_video_as_image(painter, rect):
+                return
+                    
+            # 모든 방법 실패시 플레이스홀더
+            self.draw_placeholder(painter, rect, f"비디오: {os.path.basename(self.current_media_path)}")
             
         except Exception as e:
-            self.draw_placeholder(painter, rect, f"비디오 오류: {str(e)}")
+            print(f"비디오 프레임 그리기 오류: {e}")
+            self.draw_placeholder(painter, rect, f"비디오 로드 실패")
+            
+    def try_load_video_as_image(self, painter, rect):
+        """비디오 파일을 이미지로 직접 로드 시도 (일부 포맷)"""
+        try:
+            # 일부 비디오 포맷은 QPixmap으로 직접 로드 가능할 수 있음
+            pixmap = QPixmap(self.current_media_path)
+            if not pixmap.isNull():
+                scaled_pixmap = pixmap.scaled(
+                    rect.size(), 
+                    Qt.AspectRatioMode.KeepAspectRatio, 
+                    Qt.TransformationMode.SmoothTransformation
+                )
+                
+                x = rect.x() + (rect.width() - scaled_pixmap.width()) // 2
+                y = rect.y() + (rect.height() - scaled_pixmap.height()) // 2
+                painter.drawPixmap(x, y, scaled_pixmap)
+                
+                # 프레임 번호 오버레이
+                painter.setPen(QPen(QColor(255, 255, 255, 200)))
+                font = QFont("Arial", 12)
+                painter.setFont(font)
+                frame_text = f"Frame: {self.current_frame}"
+                painter.drawText(rect.adjusted(10, 10, -10, -10), 
+                               Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft, 
+                               frame_text)
+                return True
+        except:
+            pass
+        return False
             
     def draw_audio_frame(self, painter, rect):
         """오디오 파형 그리기"""
-        # 오디오 파형 시각화 (간단한 구현)
-        painter.fillRect(rect, QColor(40, 40, 40))
+        # 오디오 배경 (어두운 그라데이션)
+        painter.fillRect(rect, QColor(20, 30, 40))
+        
+        # 간단한 파형 시뮬레이션
+        import math
+        painter.setPen(QPen(QColor(100, 200, 100), 2))
+        
+        # 현재 재생 위치 기반 파형 그리기
+        wave_height = rect.height() // 4
+        wave_center = rect.y() + rect.height() // 2
+        
+        # 여러 주파수 파형 그리기
+        for i in range(0, rect.width(), 2):
+            # 시간 기반 파형 (현재 프레임 반영)
+            time = (i + self.current_frame * 2) * 0.1
+            wave1 = math.sin(time) * wave_height * 0.3
+            wave2 = math.sin(time * 2.5) * wave_height * 0.2
+            wave3 = math.sin(time * 0.7) * wave_height * 0.1
+            
+            combined_wave = wave1 + wave2 + wave3
+            
+            x = rect.x() + i
+            y = wave_center + int(combined_wave)
+            
+            painter.drawLine(x, wave_center, x, y)
         
         # 중앙에 오디오 아이콘
-        painter.setPen(QPen(QColor(100, 200, 100), 2))
-        font = QFont("Arial", 48)
+        painter.setPen(QPen(QColor(150, 255, 150), 3))
+        font = QFont("Arial", 36, QFont.Weight.Bold)
         painter.setFont(font)
         painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, "🎵")
         
-        # 파일 이름 표시
-        font = QFont("Arial", 12)
+        # 파일 이름 및 정보 표시
+        font = QFont("Arial", 14, QFont.Weight.Bold)
         painter.setFont(font)
-        painter.setPen(QPen(QColor(200, 200, 200)))
+        painter.setPen(QPen(QColor(255, 255, 255)))
         file_name = os.path.basename(self.current_media_path)
-        painter.drawText(rect.adjusted(10, -30, -10, -10), 
-                        Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignCenter, 
+        painter.drawText(rect.adjusted(10, 10, -10, -60), 
+                        Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignCenter, 
                         file_name)
+        
+        # 현재 시간 표시
+        if self.current_media_info:
+            current_time = self.current_frame / 30.0  # 30fps 기준
+            total_time = self.current_media_info['duration']
+            time_text = f"{current_time:.1f}s / {total_time:.1f}s"
+            
+            font = QFont("Arial", 12)
+            painter.setFont(font)
+            painter.setPen(QPen(QColor(200, 200, 200)))
+            painter.drawText(rect.adjusted(10, -50, -10, -10), 
+                            Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignCenter, 
+                            time_text)
                         
     def draw_placeholder(self, painter, rect, text="미디어 미리보기"):
         """플레이스홀더 그리기"""
-        # 그라데이션 배경
-        painter.fillRect(rect, QColor(60, 60, 60))
+        # 그라데이션 배경 (어두운 테마)
+        painter.fillRect(rect, QColor(45, 45, 45))
+        
+        # 테두리 그리기
+        painter.setPen(QPen(QColor(100, 100, 100), 2))
+        painter.drawRect(rect.adjusted(2, 2, -2, -2))
         
         # 중앙에 텍스트
-        painter.setPen(QPen(QColor(200, 200, 200)))
-        font = QFont("Arial", 16)
+        painter.setPen(QPen(QColor(220, 220, 220)))
+        font = QFont("Arial", 16, QFont.Weight.Bold)
         painter.setFont(font)
         painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, text)
         
         # 미디어 정보 표시
         if self.current_media_info:
-            info_text = f"{self.current_media_info['width']}x{self.current_media_info['height']} @ {self.current_media_info['fps']:.1f}fps"
+            info_lines = [
+                f"크기: {self.current_media_info['width']}x{self.current_media_info['height']}",
+                f"FPS: {self.current_media_info['fps']:.1f}",
+                f"길이: {self.current_media_info['duration']:.1f}초",
+                f"타입: {self.current_media_info['media_type']}"
+            ]
+            
             font = QFont("Arial", 10)
             painter.setFont(font)
-            painter.drawText(rect.adjusted(10, 10, -10, -10), 
-                           Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft, 
-                           info_text) 
+            painter.setPen(QPen(QColor(180, 180, 180)))
+            
+            y_offset = 15
+            for i, info_line in enumerate(info_lines):
+                painter.drawText(rect.adjusted(10, 10 + i * y_offset, -10, -10), 
+                               Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft, 
+                               info_line)
+        
+        # 프레임 번호 표시
+        frame_text = f"Frame: {self.current_frame}"
+        font = QFont("Arial", 12, QFont.Weight.Bold)
+        painter.setFont(font)
+        painter.setPen(QPen(QColor(255, 255, 100)))
+        painter.drawText(rect.adjusted(10, -30, -10, -10), 
+                        Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignLeft, 
+                        frame_text) 

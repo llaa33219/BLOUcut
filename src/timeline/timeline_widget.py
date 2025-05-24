@@ -36,6 +36,7 @@ class TimelineWidget(QWidget):
         self.tracks_height = 80  # 트랙 높이
         self.ruler_height = 30  # 룰러 높이
         self.track_count = 3  # 기본 트랙 수
+        self.max_tracks = 20  # 최대 트랙 수
         
         # 마우스 상호작용
         self.is_dragging = False
@@ -95,11 +96,24 @@ class TimelineWidget(QWidget):
         self.update_timer.timeout.connect(self.update)
         self.update_timer.start(33)  # 약 30fps
         
+        # 크기 변경 이벤트
+        self.resizeEvent = self.on_resize
+        
     def init_ui(self):
         """UI 초기화"""
         self.setMinimumSize(800, 200)
         self.setMouseTracking(True)
         self.apply_styles()
+        
+    def on_resize(self, event):
+        """크기 변경 이벤트"""
+        self.viewport_width = self.width()
+        # 타임라인 전체 너비 동적 계산
+        if self.clips:
+            max_end_frame = max(clip.start_frame + clip.duration for clip in self.clips)
+            pixels_per_frame = self.zoom_level * 2
+            self.timeline_width = max(10000, (max_end_frame + 300) * pixels_per_frame)
+        super().resizeEvent(event)
         
     def apply_styles(self):
         """스타일 적용"""
@@ -145,29 +159,114 @@ class TimelineWidget(QWidget):
         font = QFont("Arial", 8)
         painter.setFont(font)
         
-        # 초 단위 눈금 (30fps 기준)
         frames_per_second = 30
-        pixels_per_frame = self.zoom_level * 2  # 줌 레벨에 따른 픽셀/프레임
+        pixels_per_frame = self.zoom_level * 2
         
-        for second in range(0, int(self.width() / (pixels_per_frame * frames_per_second)) + 1):
-            x = second * frames_per_second * pixels_per_frame
-            if x > self.width():
-                break
+        # 줌 레벨에 따른 동적 시간 간격 결정
+        time_interval = self.get_optimal_time_interval(pixels_per_frame, frames_per_second)
+        
+        # 보이는 영역의 시작/끝 시간 계산
+        start_time = max(0, self.timeline_offset_x / (pixels_per_frame * frames_per_second))
+        end_time = (self.timeline_offset_x + self.width()) / (pixels_per_frame * frames_per_second)
+        
+        # 시간 간격에 맞춰 정렬
+        start_interval = int(start_time / time_interval) * time_interval
+        end_interval = (int(end_time / time_interval) + 2) * time_interval
+        
+        current_time = start_interval
+        while current_time <= end_interval:
+            x = (current_time * frames_per_second * pixels_per_frame) - self.timeline_offset_x
+            
+            if -100 <= x <= self.width() + 100:
+                # 주요 눈금 그리기
+                painter.setPen(QPen(QColor(255, 255, 255), 2))
+                painter.drawLine(int(x), 0, int(x), self.ruler_height)
                 
-            # 주요 눈금 (초 단위)
-            painter.setPen(QPen(QColor(255, 255, 255), 2))
-            painter.drawLine(int(x), 0, int(x), self.ruler_height)
+                # 시간 텍스트 포맷팅
+                time_text = self.format_time_text(current_time, time_interval)
+                painter.drawText(int(x) + 2, self.ruler_height - 5, time_text)
+                
+                # 작은 눈금들 (적절한 간격으로)
+                self.draw_minor_ticks(painter, current_time, time_interval, pixels_per_frame, frames_per_second)
             
-            # 시간 텍스트
-            time_text = f"{second:02d}:00"
-            painter.drawText(int(x) + 2, self.ruler_height - 5, time_text)
+            current_time += time_interval
             
-            # 작은 눈금들 (0.5초 단위)
-            half_second_x = x + (frames_per_second * pixels_per_frame / 2)
-            if half_second_x < self.width():
-                painter.setPen(QPen(QColor(200, 200, 200), 1))
-                painter.drawLine(int(half_second_x), self.ruler_height - 10, 
-                               int(half_second_x), self.ruler_height)
+    def get_optimal_time_interval(self, pixels_per_frame, frames_per_second):
+        """줌 레벨에 따른 최적 시간 간격 반환"""
+        if pixels_per_frame <= 0 or frames_per_second <= 0:
+            return 1.0  # 기본값
+            
+        seconds_per_pixel = 1.0 / (pixels_per_frame * frames_per_second)
+        
+        # 최소 80픽셀 간격을 유지하도록 시간 간격 결정
+        min_interval_seconds = seconds_per_pixel * 80
+        
+        # 확장된 시간 간격 목록 (매우 작은 값부터 매우 큰 값까지)
+        intervals = [
+            # 매우 작은 간격 (극대 줌용)
+            0.001, 0.002, 0.005, 0.01, 0.02, 0.05,
+            # 일반 간격
+            0.1, 0.2, 0.5, 1, 2, 5, 10, 15, 30,  # 초
+            60, 120, 300, 600, 900, 1800,         # 분
+            3600, 7200, 10800, 21600,             # 시간
+            # 매우 큰 간격 (극소 줌용)
+            86400, 172800, 604800, 2629746        # 일, 주, 월
+        ]
+        
+        # 최소 간격보다 큰 가장 작은 간격 선택
+        for interval in intervals:
+            if interval >= min_interval_seconds:
+                return interval
+        
+        # 최대 간격보다도 큰 경우 동적으로 생성
+        return min_interval_seconds
+        
+    def format_time_text(self, time_seconds, interval):
+        """시간 간격에 따른 텍스트 포맷팅"""
+        if interval < 0.01:
+            # 매우 작은 간격: 밀리초 표시
+            return f"{time_seconds*1000:.0f}ms"
+        elif interval < 0.1:
+            # 0.01~0.1초: 소수점 2자리
+            return f"{time_seconds:.2f}s"
+        elif interval < 1:
+            # 0.1~1초: 소수점 1자리
+            return f"{time_seconds:.1f}s"
+        elif interval < 60:
+            # 1분 미만: 초 단위
+            return f"{int(time_seconds)}s"
+        elif interval < 3600:
+            # 1시간 미만: 분:초
+            minutes = int(time_seconds // 60)
+            seconds = int(time_seconds % 60)
+            return f"{minutes}:{seconds:02d}"
+        elif interval < 86400:
+            # 1일 미만: 시:분:초
+            hours = int(time_seconds // 3600)
+            minutes = int((time_seconds % 3600) // 60)
+            seconds = int(time_seconds % 60)
+            return f"{hours}:{minutes:02d}:{seconds:02d}"
+        else:
+            # 1일 이상: 일 단위
+            days = int(time_seconds // 86400)
+            hours = int((time_seconds % 86400) // 3600)
+            return f"{days}d {hours}h"
+            
+    def draw_minor_ticks(self, painter, current_time, interval, pixels_per_frame, frames_per_second):
+        """작은 눈금 그리기"""
+        # 간격이 충분히 클 때만 작은 눈금 표시
+        minor_interval = interval / 5  # 주 눈금의 1/5 간격
+        
+        if minor_interval * frames_per_second * pixels_per_frame >= 20:  # 최소 20픽셀 간격
+            painter.setPen(QPen(QColor(150, 150, 150), 1))
+            
+            for i in range(1, 5):  # 중간에 4개의 작은 눈금
+                minor_time = current_time + minor_interval * i
+                minor_x = (minor_time * frames_per_second * pixels_per_frame) - self.timeline_offset_x
+                
+                if 0 <= minor_x <= self.width():
+                    painter.drawLine(int(minor_x), self.ruler_height - 8, 
+                                   int(minor_x), self.ruler_height)
                                
     def draw_tracks(self, painter):
         """트랙 구분선 그리기"""
@@ -177,7 +276,7 @@ class TimelineWidget(QWidget):
             y = self.ruler_height + i * self.tracks_height
             painter.drawLine(0, y, self.width(), y)
             
-        # 트랙 레이블
+        # 트랙 레이블과 버튼
         font = QFont("Arial", 10, QFont.Weight.Bold)
         painter.setFont(font)
         painter.setPen(QPen(QColor(255, 255, 255), 1))
@@ -186,6 +285,17 @@ class TimelineWidget(QWidget):
             y = self.ruler_height + i * self.tracks_height + self.tracks_height // 2
             painter.drawText(5, y, f"V{i+1}")
             
+        # 트랙 추가 버튼 영역 (마지막 트랙 아래)
+        if self.track_count < self.max_tracks:
+            add_track_y = self.ruler_height + self.track_count * self.tracks_height
+            painter.setPen(QPen(QColor(100, 200, 100), 2))
+            painter.drawLine(0, add_track_y, self.width(), add_track_y)
+            
+            # + 버튼
+            plus_rect = QRect(10, add_track_y + 10, 30, 20)
+            painter.drawRect(plus_rect)
+            painter.drawText(plus_rect, Qt.AlignmentFlag.AlignCenter, "+")
+            
     def draw_clips(self, painter):
         """클립들 그리기"""
         for clip in self.clips:
@@ -193,13 +303,17 @@ class TimelineWidget(QWidget):
             
     def draw_clip(self, painter, clip):
         """개별 클립 그리기"""
-        # 클립 위치 계산
+        # 클립 위치 계산 (오프셋 적용)
         pixels_per_frame = self.zoom_level * 2
-        x = clip.start_frame * pixels_per_frame
+        x = (clip.start_frame * pixels_per_frame) - self.timeline_offset_x
         y = self.ruler_height + clip.track * self.tracks_height + 5
         width = clip.duration * pixels_per_frame
         height = self.tracks_height - 10
         
+        # 보이는 영역 밖의 클립은 건너뛰기
+        if x + width < 0 or x > self.width():
+            return
+            
         clip_rect = QRect(int(x), int(y), int(width), int(height))
         
         # 클립 색상 (선택 여부에 따라)
@@ -252,7 +366,11 @@ class TimelineWidget(QWidget):
     def draw_playhead(self, painter):
         """재생 헤드 그리기"""
         pixels_per_frame = self.zoom_level * 2
-        x = self.playhead_position * pixels_per_frame
+        x = (self.playhead_position * pixels_per_frame) - self.timeline_offset_x
+        
+        # 보이는 영역 밖이면 그리지 않음
+        if x < 0 or x > self.width():
+            return
         
         # 재생 헤드 라인
         painter.setPen(QPen(QColor(255, 0, 0), 3))
@@ -329,9 +447,18 @@ class TimelineWidget(QWidget):
                 
             # 룰러 클릭 - 재생 헤드 이동
             if event.position().y() < self.ruler_height:
-                new_frame = int(event.position().x() / pixels_per_frame)
+                adjusted_x = event.position().x() + self.timeline_offset_x
+                new_frame = int(adjusted_x / pixels_per_frame)
                 self.set_playhead_position(new_frame)
                 return
+                
+            # 트랙 추가 버튼 클릭 확인
+            if self.track_count < self.max_tracks:
+                add_track_y = self.ruler_height + self.track_count * self.tracks_height
+                plus_rect = QRect(10, add_track_y + 10, 30, 20)
+                if plus_rect.contains(event.position().toPoint()):
+                    self.add_track()
+                    return
                 
             # 클립 선택/드래그
             clicked_clip = self.get_clip_at_position(event.position())
@@ -564,6 +691,18 @@ class TimelineWidget(QWidget):
                 self.playhead_position = last_frame
                 self.playhead_changed.emit(last_frame)
                 
+        elif event.key() == Qt.Key.Key_F and event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            # Ctrl+F - 전체 보기
+            self.zoom_to_fit_all()
+            
+        elif event.key() == Qt.Key.Key_F and event.modifiers() & Qt.KeyboardModifier.AltModifier:
+            # Alt+F - 선택 클립에 맞춤
+            self.zoom_to_fit_selection()
+            
+        elif event.key() == Qt.Key.Key_0 and event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            # Ctrl+0 - 기본 줌 (100%)
+            self.zoom_level = 1.0
+                
         self.update()
         
     def wheelEvent(self, event):
@@ -571,16 +710,39 @@ class TimelineWidget(QWidget):
         modifiers = event.modifiers()
         
         if modifiers & Qt.KeyboardModifier.ControlModifier:
-            # Ctrl + 휠 = 줌
+            # Ctrl + 휠 = 줌 (마우스 위치 기준)
             delta = event.angleDelta().y()
-            if delta > 0:
-                self.zoom_in()
-            else:
-                self.zoom_out()
+            
+            # 마우스 위치 기준 줌
+            mouse_x = event.position().x()
+            
+            # 줌 전 마우스 위치의 타임라인 좌표
+            pixels_per_frame = self.zoom_level * 2
+            old_frame_at_mouse = (mouse_x + self.timeline_offset_x) / pixels_per_frame
+            
+            # 줌 적용
+            zoom_factor = 1.15 if delta > 0 else 1/1.15
+            old_zoom = self.zoom_level
+            new_zoom = self.zoom_level * zoom_factor
+            self.zoom_level = max(new_zoom, 1e-10)  # 0에 가까워지는 것만 방지
+            
+            # 줌 후 새로운 픽셀/프레임 비율
+            new_pixels_per_frame = self.zoom_level * 2
+            
+            # 마우스 위치가 같은 프레임을 가리키도록 오프셋 조정
+            new_x_at_mouse = old_frame_at_mouse * new_pixels_per_frame
+            self.timeline_offset_x = new_x_at_mouse - mouse_x
+            
+            # 오프셋 범위 제한
+            self.timeline_offset_x = max(0, min(self.timeline_offset_x, 
+                                              self.timeline_width - self.viewport_width))
+            
+            self.update()
+            
         elif modifiers & Qt.KeyboardModifier.ShiftModifier:
             # Shift + 휠 = 수평 스크롤
             delta = event.angleDelta().y()
-            scroll_amount = delta * 2  # 스크롤 속도 조정
+            scroll_amount = delta * 3  # 스크롤 속도 증가
             self.pan_timeline(-scroll_amount)
         else:
             # 일반 휠 = 수직 스크롤 (기본 동작)
@@ -605,7 +767,7 @@ class TimelineWidget(QWidget):
         pixels_per_frame = self.zoom_level * 2
         
         for clip in self.clips:
-            x = clip.start_frame * pixels_per_frame
+            x = (clip.start_frame * pixels_per_frame) - self.timeline_offset_x
             y = self.ruler_height + clip.track * self.tracks_height + 5
             width = clip.duration * pixels_per_frame
             height = self.tracks_height - 10
@@ -620,7 +782,7 @@ class TimelineWidget(QWidget):
     def get_resize_edge(self, pos, clip):
         """클립 크기 조정 가능 영역인지 확인"""
         pixels_per_frame = self.zoom_level * 2
-        x = clip.start_frame * pixels_per_frame
+        x = (clip.start_frame * pixels_per_frame) - self.timeline_offset_x
         width = clip.duration * pixels_per_frame
         
         # 왼쪽 가장자리
@@ -748,12 +910,58 @@ class TimelineWidget(QWidget):
         
     def zoom_in(self):
         """줌 인"""
-        self.zoom_level = min(self.zoom_level * 1.2, 5.0)
+        self.zoom_level = self.zoom_level * 1.3  # 제한 없음
         self.update()
         
     def zoom_out(self):
         """줌 아웃"""
-        self.zoom_level = max(self.zoom_level / 1.2, 0.1)
+        self.zoom_level = max(self.zoom_level / 1.3, 1e-10)  # 0에 가까워지는 것만 방지
+        self.update()
+        
+    def zoom_to_fit_all(self):
+        """모든 클립이 보이도록 줌 조정"""
+        if not self.clips:
+            return
+            
+        # 모든 클립의 범위 계산
+        min_frame = min(clip.start_frame for clip in self.clips)
+        max_frame = max(clip.start_frame + clip.duration for clip in self.clips)
+        
+        # 여유 공간 추가 (10%)
+        total_frames = max_frame - min_frame
+        padding_frames = total_frames * 0.1
+        
+        # 줌 레벨 계산
+        available_width = self.width() - 100  # 여유 공간
+        pixels_per_frame = available_width / (total_frames + padding_frames * 2)
+        self.zoom_level = pixels_per_frame / 2  # 기본 배율이 2이므로 나누기
+        
+        # 오프셋 조정 (클립들이 중앙에 오도록)
+        self.timeline_offset_x = (min_frame - padding_frames) * pixels_per_frame
+        
+        self.update()
+        
+    def zoom_to_fit_selection(self):
+        """선택된 클립들이 보이도록 줌 조정"""
+        if not self.selected_clips:
+            return
+            
+        # 선택된 클립들의 범위 계산
+        min_frame = min(clip.start_frame for clip in self.selected_clips)
+        max_frame = max(clip.start_frame + clip.duration for clip in self.selected_clips)
+        
+        # 여유 공간 추가 (10%)
+        total_frames = max_frame - min_frame
+        padding_frames = max(total_frames * 0.1, 30)  # 최소 1초 여유
+        
+        # 줌 레벨 계산
+        available_width = self.width() - 100
+        pixels_per_frame = available_width / (total_frames + padding_frames * 2)
+        self.zoom_level = pixels_per_frame / 2
+        
+        # 오프셋 조정
+        self.timeline_offset_x = (min_frame - padding_frames) * pixels_per_frame
+        
         self.update()
         
     def set_playhead_position(self, frame):
@@ -843,6 +1051,36 @@ class TimelineWidget(QWidget):
     def set_snap_threshold(self, threshold: int):
         """스냅 임계값 설정"""
         self.snap_threshold = threshold
+        
+    def add_track(self):
+        """트랙 추가"""
+        if self.track_count < self.max_tracks:
+            self.track_count += 1
+            # 위젯 크기 조정
+            new_height = self.ruler_height + self.track_count * self.tracks_height + 100
+            self.setMinimumHeight(new_height)
+            self.update()
+            
+    def remove_track(self, track_index=None):
+        """트랙 제거"""
+        if self.track_count > 1:  # 최소 1개 트랙은 유지
+            if track_index is None:
+                track_index = self.track_count - 1  # 마지막 트랙 제거
+                
+            # 해당 트랙의 클립들을 다른 트랙으로 이동 또는 삭제
+            clips_to_remove = [clip for clip in self.clips if clip.track == track_index]
+            for clip in clips_to_remove:
+                self.clips.remove(clip)
+                
+            # 더 높은 트랙의 클립들을 한 트랙씩 아래로 이동
+            for clip in self.clips:
+                if clip.track > track_index:
+                    clip.track -= 1
+                    
+            self.track_count -= 1
+            new_height = self.ruler_height + self.track_count * self.tracks_height + 100
+            self.setMinimumHeight(new_height)
+            self.update()
         
     def dragEnterEvent(self, event):
         """드래그 진입 이벤트"""

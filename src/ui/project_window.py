@@ -89,10 +89,21 @@ class ProjectWindow(QMainWindow):
         
         main_layout.addWidget(top_splitter, 2)
         
-        # 하단 타임라인
+        # 타임라인 영역 (컨트롤 + 타임라인)
+        timeline_layout = QVBoxLayout()
+        timeline_frame = QFrame()
+        timeline_frame.setLayout(timeline_layout)
+        
+        # 타임라인 컨트롤 바
+        timeline_controls = self.create_timeline_controls()
+        timeline_layout.addLayout(timeline_controls)
+        
+        # 타임라인 위젯
         self.timeline_widget = TimelineWidget()
         self.timeline_widget.setMinimumHeight(200)
-        main_layout.addWidget(self.timeline_widget, 1)
+        timeline_layout.addWidget(self.timeline_widget, 1)
+        
+        main_layout.addWidget(timeline_frame, 1)
         
         # 스타일 적용
         self.apply_styles()
@@ -108,6 +119,101 @@ class ProjectWindow(QMainWindow):
         
         # 자동 저장 관리자 설정
         self.setup_auto_save()
+        
+        # 초기 줌 표시 업데이트
+        self.update_zoom_display()
+        
+    def create_timeline_controls(self):
+        """타임라인 컨트롤 바 생성"""
+        layout = QHBoxLayout()
+        layout.setContentsMargins(5, 5, 5, 5)
+        layout.setSpacing(5)
+        
+        # 줌 컨트롤
+        layout.addWidget(QLabel("줌:"))
+        
+        # 줌 아웃 버튼
+        zoom_out_btn = QPushButton("−")
+        zoom_out_btn.setMaximumWidth(30)
+        zoom_out_btn.clicked.connect(self.zoom_out)
+        layout.addWidget(zoom_out_btn)
+        
+        # 줌 슬라이더
+        self.zoom_slider = QSlider(Qt.Orientation.Horizontal)
+        self.zoom_slider.setRange(1, 10000)  # 매우 넓은 범위 (로그 스케일)
+        self.zoom_slider.setValue(1000)  # 1.0x
+        self.zoom_slider.setMaximumWidth(150)
+        self.zoom_slider.valueChanged.connect(self.on_zoom_slider_changed)
+        layout.addWidget(self.zoom_slider)
+        
+        # 줌 인 버튼
+        zoom_in_btn = QPushButton("+")
+        zoom_in_btn.setMaximumWidth(30)
+        zoom_in_btn.clicked.connect(self.zoom_in)
+        layout.addWidget(zoom_in_btn)
+        
+        # 줌 레벨 표시
+        self.zoom_label = QLabel("100%")
+        self.zoom_label.setMinimumWidth(50)
+        layout.addWidget(self.zoom_label)
+        
+        layout.addWidget(QFrame())  # 구분선
+        
+        # 스냅 토글
+        self.snap_button = QPushButton("🧲 스냅")
+        self.snap_button.setCheckable(True)
+        self.snap_button.setChecked(True)
+        self.snap_button.toggled.connect(self.toggle_snap)
+        layout.addWidget(self.snap_button)
+        
+        # 핸드 툴
+        self.hand_tool_button = QPushButton("✋ 핸드툴")
+        self.hand_tool_button.setCheckable(True)
+        self.hand_tool_button.toggled.connect(self.toggle_hand_tool)
+        layout.addWidget(self.hand_tool_button)
+        
+        layout.addWidget(QFrame())  # 구분선
+        
+        # 트랙 관리
+        layout.addWidget(QLabel("트랙:"))
+        
+        add_track_btn = QPushButton("+ 추가")
+        add_track_btn.clicked.connect(self.add_track)
+        layout.addWidget(add_track_btn)
+        
+        remove_track_btn = QPushButton("− 제거")
+        remove_track_btn.clicked.connect(self.remove_track)
+        layout.addWidget(remove_track_btn)
+        
+        # 트랙 수 표시
+        self.track_count_label = QLabel("3개")
+        layout.addWidget(self.track_count_label)
+        
+        layout.addWidget(QFrame())  # 구분선
+        
+        # 줌 맞춤 버튼들
+        fit_all_btn = QPushButton("전체보기")
+        fit_all_btn.setToolTip("모든 클립이 보이도록 줌 조정 (Ctrl+F)")
+        fit_all_btn.clicked.connect(self.fit_all_clips)
+        layout.addWidget(fit_all_btn)
+        
+        fit_selection_btn = QPushButton("선택맞춤")
+        fit_selection_btn.setToolTip("선택된 클립들에 맞춰 줌 조정 (Alt+F)")
+        fit_selection_btn.clicked.connect(self.fit_selected_clips)
+        layout.addWidget(fit_selection_btn)
+        
+        reset_zoom_btn = QPushButton("100%")
+        reset_zoom_btn.setToolTip("기본 줌 레벨로 복원 (Ctrl+0)")
+        reset_zoom_btn.clicked.connect(self.reset_zoom)
+        layout.addWidget(reset_zoom_btn)
+        
+        layout.addStretch()
+        
+        # 타임라인 정보
+        self.timeline_info_label = QLabel("타임라인: 00:00 ~ 00:30")
+        layout.addWidget(self.timeline_info_label)
+        
+        return layout
         
     def create_menus(self):
         """메뉴 생성"""
@@ -192,6 +298,23 @@ class ProjectWindow(QMainWindow):
         zoom_out_action.setShortcut(QKeySequence("Ctrl+-"))
         zoom_out_action.triggered.connect(self.zoom_out)
         view_menu.addAction(zoom_out_action)
+        
+        view_menu.addSeparator()
+        
+        fit_all_action = QAction("전체 보기(&A)", self)
+        fit_all_action.setShortcut(QKeySequence("Ctrl+F"))
+        fit_all_action.triggered.connect(self.fit_all_clips)
+        view_menu.addAction(fit_all_action)
+        
+        fit_selection_action = QAction("선택 클립에 맞춤(&S)", self)
+        fit_selection_action.setShortcut(QKeySequence("Alt+F"))
+        fit_selection_action.triggered.connect(self.fit_selected_clips)
+        view_menu.addAction(fit_selection_action)
+        
+        reset_zoom_action = QAction("기본 줌(&R)", self)
+        reset_zoom_action.setShortcut(QKeySequence("Ctrl+0"))
+        reset_zoom_action.triggered.connect(self.reset_zoom)
+        view_menu.addAction(reset_zoom_action)
         
         # 도움말 메뉴
         help_menu = menubar.addMenu("도움말(&H)")
@@ -562,10 +685,114 @@ class ProjectWindow(QMainWindow):
     def zoom_in(self):
         """확대"""
         self.timeline_widget.zoom_in()
+        self.update_zoom_display()
         
     def zoom_out(self):
         """축소"""
         self.timeline_widget.zoom_out()
+        self.update_zoom_display()
+        
+    def on_zoom_slider_changed(self, value):
+        """줌 슬라이더 변경"""
+        # 로그 스케일 변환: 1~10000 -> 무제한 범위
+        import math
+        
+        # 1000이 1.0x (100%)가 되도록 설정
+        if value == 1000:
+            zoom_level = 1.0
+        elif value < 1000:
+            # 1~999 -> 매우 작은 값~1.0 (로그 스케일)
+            log_ratio = (value - 1) / 999.0  # 0~1
+            zoom_level = 10 ** (log_ratio * 2 - 4)  # 0.0001 ~ 1.0
+        else:
+            # 1001~10000 -> 1.0~매우 큰 값 (로그 스케일)
+            log_ratio = (value - 1000) / 9000.0  # 0~1
+            zoom_level = 10 ** (log_ratio * 4)  # 1.0 ~ 10000
+            
+        self.timeline_widget.zoom_level = zoom_level
+        self.timeline_widget.update()
+        self.update_zoom_display()
+        
+    def update_zoom_display(self):
+        """줌 레벨 표시 업데이트"""
+        zoom_level = self.timeline_widget.zoom_level
+        
+        # 줌 레벨을 슬라이더 값으로 변환 (역변환)
+        import math
+        
+        if zoom_level == 1.0:
+            slider_value = 1000
+        elif zoom_level < 1.0:
+            # 매우 작은 값~1.0 -> 1~999
+            if zoom_level > 0:
+                log_val = (math.log10(zoom_level) + 4) / 2  # 0~1
+                slider_value = int(1 + log_val * 999)
+            else:
+                slider_value = 1
+        else:
+            # 1.0~매우 큰 값 -> 1001~10000
+            log_val = math.log10(zoom_level) / 4  # 0~1
+            slider_value = int(1000 + log_val * 9000)
+            
+        # 슬라이더 범위 제한
+        slider_value = max(1, min(10000, slider_value))
+            
+        # 퍼센트 표시 (더 넓은 범위)
+        if zoom_level < 0.01:
+            zoom_text = f"{zoom_level*100:.3f}%"
+        elif zoom_level < 0.1:
+            zoom_text = f"{zoom_level*100:.2f}%"
+        elif zoom_level < 1:
+            zoom_text = f"{zoom_level*100:.1f}%"
+        elif zoom_level < 100:
+            zoom_text = f"{int(zoom_level*100)}%"
+        else:
+            zoom_text = f"{zoom_level*100:.0f}%"
+            
+        self.zoom_label.setText(zoom_text)
+        self.zoom_slider.setValue(slider_value)
+        
+    def toggle_snap(self, checked):
+        """스냅 기능 토글"""
+        self.timeline_widget.toggle_snap()
+        self.snap_button.setText("🧲 스냅" if checked else "스냅")
+        
+    def toggle_hand_tool(self, checked):
+        """핸드 툴 토글"""
+        self.timeline_widget.toggle_hand_tool()
+        self.hand_tool_button.setText("✋ 핸드툴" if checked else "핸드툴")
+        
+    def add_track(self):
+        """트랙 추가"""
+        self.timeline_widget.add_track()
+        self.update_track_count_display()
+        
+    def remove_track(self):
+        """트랙 제거"""
+        self.timeline_widget.remove_track()
+        self.update_track_count_display()
+        
+    def update_track_count_display(self):
+        """트랙 수 표시 업데이트"""
+        count = self.timeline_widget.track_count
+        self.track_count_label.setText(f"{count}개")
+        
+    def fit_all_clips(self):
+        """모든 클립에 맞춰 줌 조정"""
+        self.timeline_widget.zoom_to_fit_all()
+        self.update_zoom_display()
+        
+    def fit_selected_clips(self):
+        """선택된 클립들에 맞춰 줌 조정"""
+        self.timeline_widget.zoom_to_fit_selection()
+        self.update_zoom_display()
+        
+    def reset_zoom(self):
+        """기본 줌 레벨로 복원"""
+        self.timeline_widget.zoom_level = 1.0
+        self.timeline_widget.timeline_offset_x = 0
+        self.timeline_widget.update()
+        self.update_zoom_display()
         
     def show_shortcuts_help(self):
         """키보드 단축키 도움말"""

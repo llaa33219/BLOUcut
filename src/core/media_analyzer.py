@@ -99,21 +99,46 @@ class MediaAnalyzer:
                         except (ValueError, TypeError):
                             pass
         
-        # 미디어 타입 결정
-        if info['has_video']:
-            info['media_type'] = 'video'
-        elif info['has_audio']:
-            info['media_type'] = 'audio'
-        else:
-            # 이미지 파일인지 확인
-            ext = os.path.splitext(file_path)[1].lower()
-            image_exts = ['.jpg', '.jpeg', '.png', '.bmp', '.gif', '.tiff', '.webp']
-            if ext in image_exts:
-                info['media_type'] = 'image'
-                info['duration'] = 3.0  # 이미지 기본 3초
+        # 파일 확장자 확인
+        ext = os.path.splitext(file_path)[1].lower()
+        video_exts = ['.mp4', '.avi', '.mov', '.mkv', '.wmv', '.flv', '.webm', '.m4v']
+        audio_exts = ['.mp3', '.wav', '.aac', '.ogg', '.m4a', '.flac', '.wma']
+        image_exts = ['.jpg', '.jpeg', '.png', '.bmp', '.gif', '.tiff', '.webp']
         
-        # 프레임 단위 길이 계산
-        info['duration_frames'] = int(info['duration'] * info['fps'])
+        # 미디어 타입 결정 (확장자 우선)
+        if ext in audio_exts:
+            # 오디오 파일 (앨범 아트가 있어도 오디오로 처리)
+            info['media_type'] = 'audio'
+            info['fps'] = 30.0  # 타임라인 기준 FPS
+        elif ext in video_exts:
+            # 비디오 파일
+            info['media_type'] = 'video'
+        elif ext in image_exts:
+            # 이미지 파일
+            info['media_type'] = 'image'
+            info['duration'] = 3.0  # 이미지 기본 3초
+            info['fps'] = 30.0  # 타임라인 기준 FPS
+        else:
+            # 확장자로 판단할 수 없는 경우 스트림 정보 사용
+            if info['has_video']:
+                info['media_type'] = 'video'
+            elif info['has_audio']:
+                info['media_type'] = 'audio'
+                info['fps'] = 30.0
+            else:
+                info['media_type'] = 'unknown'
+        
+        # 프레임 단위 길이 계산 (타임라인 기준 30fps로 통일)
+        timeline_fps = 30.0
+        info['duration_frames'] = int(info['duration'] * timeline_fps)
+        
+        # 디버그 출력
+        print(f"미디어 분석 결과: {os.path.basename(file_path)}")
+        print(f"  길이: {info['duration']:.2f}초")
+        print(f"  프레임: {info['duration_frames']}프레임")
+        print(f"  has_video: {info['has_video']}, has_audio: {info['has_audio']}")
+        print(f"  타입: {info['media_type']}")
+        print(f"  스트림 정보: {[s.get('codec_type') for s in data.get('streams', [])]}")
         
         return info
     
@@ -183,23 +208,29 @@ class MediaAnalyzer:
             return thumbnail_path
             
         try:
-            # FFmpeg로 썸네일 생성
+            # FFmpeg로 썸네일 생성 (더 안정적인 옵션 사용)
             cmd = [
                 'ffmpeg',
                 '-i', file_path,
-                '-ss', str(time_seconds),
+                '-ss', str(max(0, time_seconds)),  # 음수 방지
                 '-vframes', '1',
-                '-q:v', '2',
+                '-vf', 'scale=640:360:force_original_aspect_ratio=decrease,pad=640:360:(ow-iw)/2:(oh-ih)/2',
+                '-q:v', '3',
+                '-f', 'image2',
                 '-y',
                 thumbnail_path
             ]
             
-            result = subprocess.run(cmd, capture_output=True, timeout=30)
+            print(f"썸네일 생성 시도: {os.path.basename(file_path)} @ {time_seconds}초")
+            result = subprocess.run(cmd, capture_output=True, timeout=30, text=True)
             
             if result.returncode == 0 and os.path.exists(thumbnail_path):
+                print(f"썸네일 생성 성공: {thumbnail_path}")
                 return thumbnail_path
+            else:
+                print(f"FFmpeg 오류: {result.stderr}")
                 
-        except (subprocess.TimeoutExpired, FileNotFoundError):
-            pass
+        except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+            print(f"썸네일 생성 실패: {e}")
             
         return None 
