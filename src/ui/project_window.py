@@ -3,11 +3,12 @@ BLOUcut 프로젝트 윈도우
 영상 편집의 메인 인터페이스
 """
 
+import os
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
                            QSplitter, QTabWidget, QMenuBar, QMenu, QStatusBar, 
                            QLabel, QFrame, QPushButton, QSlider, QSpinBox, 
                            QGroupBox, QListWidget, QTextEdit, QProgressBar,
-                           QToolBar, QFileDialog, QMessageBox)
+                           QToolBar, QFileDialog, QMessageBox, QDialog)
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QAction, QKeySequence, QFont
 
@@ -485,8 +486,14 @@ class ProjectWindow(QMainWindow):
         self.media_panel.media_selected.connect(self.preview_single_media)
         
         # 타임라인 선택 변경과 속성 패널 연결
-        self.timeline_widget.selection_changed.connect(self.properties_panel.update_properties)
+        self.timeline_widget.selection_changed.connect(self.on_clip_selection_changed)
         self.timeline_widget.clip_moved.connect(self.on_timeline_changed)
+        
+        # 속성 패널 변경사항을 클립에 적용
+        self.properties_panel.property_changed.connect(self.on_property_changed)
+        
+        # 효과 패널 연결
+        self.effects_panel.effect_applied.connect(self.on_effect_applied)
         
     def setup_command_manager(self):
         """명령 관리자 설정"""
@@ -616,16 +623,43 @@ class ProjectWindow(QMainWindow):
             
     def load_project(self, file_path):
         """프로젝트 로드"""
-        self.project_path = file_path
-        project_name = file_path.split('/')[-1]
-        self.setWindowTitle(f"BLOUcut - {project_name}")
-        # TODO: 실제 프로젝트 로드 구현
+        try:
+            # 프로젝트 매니저를 통해 로드
+            project_data = self.project_manager.load_project(file_path)
+            
+            if project_data:
+                self.project_path = file_path
+                project_name = os.path.basename(file_path)
+                self.setWindowTitle(f"BLOUcut - {project_name}")
+                
+                # 타임라인 데이터 복원
+                self._restore_timeline_from_project(project_data)
+                
+                # 미디어 패널 복원
+                self._restore_media_from_project(project_data)
+                
+                QMessageBox.information(self, "로드 완료", "프로젝트가 성공적으로 로드되었습니다.")
+            else:
+                QMessageBox.warning(self, "로드 실패", "프로젝트 파일을 읽을 수 없습니다.")
+                
+        except Exception as e:
+            QMessageBox.critical(self, "오류", f"프로젝트 로드 중 오류 발생:\n{str(e)}")
         
     def save_project(self):
         """프로젝트 저장"""
         if self.project_path:
-            # TODO: 실제 저장 구현
-            QMessageBox.information(self, "저장", "프로젝트가 저장되었습니다.")
+            try:
+                # 현재 상태를 프로젝트에 반영
+                self._update_project_from_current_state()
+                
+                # 프로젝트 매니저를 통해 저장
+                if self.project_manager.save_project(self.project_path):
+                    QMessageBox.information(self, "저장 완료", "프로젝트가 저장되었습니다.")
+                else:
+                    QMessageBox.warning(self, "저장 실패", "프로젝트 저장에 실패했습니다.")
+                    
+            except Exception as e:
+                QMessageBox.critical(self, "오류", f"프로젝트 저장 중 오류 발생:\n{str(e)}")
         else:
             self.save_project_as()
             
@@ -642,6 +676,74 @@ class ProjectWindow(QMainWindow):
             self.project_path = file_path
             self.save_project()
             
+    def _restore_timeline_from_project(self, project_data):
+        """프로젝트 데이터에서 타임라인 복원"""
+        timeline_data = project_data.get("timeline", {})
+        
+        # 타임라인 초기화
+        self.timeline_widget.clips.clear()
+        self.timeline_widget.selected_clips.clear()
+        
+        # 트랙 수 설정
+        track_count = timeline_data.get("tracks", 3)
+        self.timeline_widget.track_count = track_count
+        
+        # 클립들 복원
+        from ..timeline.timeline_clip import TimelineClip
+        clips_data = timeline_data.get("clips", [])
+        
+        for clip_data in clips_data:
+            try:
+                clip = TimelineClip.from_dict(clip_data)
+                self.timeline_widget.clips.append(clip)
+            except Exception as e:
+                print(f"클립 복원 실패: {e}")
+                
+        # 마커들 복원
+        markers_data = timeline_data.get("markers", [])
+        for marker_data in markers_data:
+            try:
+                from ..timeline.timeline_marker import TimelineMarker
+                marker = TimelineMarker.from_dict(marker_data)
+                self.timeline_widget.marker_manager.markers.append(marker)
+            except Exception as e:
+                print(f"마커 복원 실패: {e}")
+                
+        # 화면 업데이트
+        self.timeline_widget.update()
+        self.update_track_count_display()
+        
+    def _restore_media_from_project(self, project_data):
+        """프로젝트 데이터에서 미디어 패널 복원"""
+        media_data = project_data.get("media", [])
+        
+        # 미디어 패널 초기화
+        self.media_panel.clear()
+        
+        # 미디어 파일들 추가
+        for media_path in media_data:
+            if os.path.exists(media_path):
+                self.media_panel.add_media(media_path)
+            else:
+                print(f"미디어 파일을 찾을 수 없음: {media_path}")
+                
+    def _update_project_from_current_state(self):
+        """현재 상태를 프로젝트 데이터에 반영"""
+        if not self.project_manager.current_project:
+            self.project_manager.new_project()
+            
+        # 미디어 파일 목록 업데이트
+        media_paths = []
+        for media_item in self.media_panel.media_items:
+            media_paths.append(media_item['path'])
+            
+        self.project_manager.current_project["media"] = media_paths
+        
+        # 프로젝트 설정 업데이트
+        settings = self.project_manager.current_project.get("settings", {})
+        settings["tracks"] = self.timeline_widget.track_count
+        self.project_manager.current_project["settings"] = settings
+            
     def import_media(self):
         """미디어 가져오기"""
         file_paths, _ = QFileDialog.getOpenFileNames(
@@ -656,8 +758,14 @@ class ProjectWindow(QMainWindow):
             
     def export_video(self):
         """영상 내보내기"""
+        if not self.timeline_widget.clips:
+            QMessageBox.warning(self, "내보내기 불가", "타임라인에 클립이 없습니다.\n먼저 미디어를 추가해주세요.")
+            return
+            
         export_dialog = ExportDialog(self.timeline_widget, self)
-        export_dialog.exec()
+        if export_dialog.exec() == QDialog.DialogCode.Accepted:
+            # 내보내기가 성공적으로 시작됨
+            pass
         
     def undo(self):
         """실행 취소"""
@@ -669,18 +777,17 @@ class ProjectWindow(QMainWindow):
         
     def cut(self):
         """잘라내기"""
-        # TODO: 잘라내기 구현
-        pass
+        if self.timeline_widget.selected_clips:
+            self.timeline_widget.cut_selected_clips()
         
     def copy(self):
         """복사"""
-        # TODO: 복사 구현
-        pass
+        if self.timeline_widget.selected_clips:
+            self.timeline_widget.copy_selected_clips()
         
     def paste(self):
         """붙여넣기"""
-        # TODO: 붙여넣기 구현
-        pass
+        self.timeline_widget.paste_clips()
         
     def zoom_in(self):
         """확대"""
@@ -837,7 +944,7 @@ class ProjectWindow(QMainWindow):
                 self.status_label.setText("프로젝트가 복구되었습니다.")
         
     def update_time_display(self, frame_number):
-        """시간 표시 업데이트"""
+        """시간 표시 업데이트 (최적화)"""
         # 30fps 기준으로 계산
         fps = 30
         total_seconds = frame_number / fps
@@ -847,24 +954,152 @@ class ProjectWindow(QMainWindow):
         frames = frame_number % fps
         
         time_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}:{frames:02d}"
-        self.time_label.setText(time_str)
+        
+        # 시간이 실제로 변경되었을 때만 업데이트
+        if not hasattr(self, '_last_time_str') or self._last_time_str != time_str:
+            self.time_label.setText(time_str)
+            self._last_time_str = time_str
         
     def update_preview(self, frame_position):
-        """프리뷰 화면 업데이트"""
-        # 타임라인 클립들을 프리뷰에 전달
-        self.preview_widget.set_timeline_clips(self.timeline_widget.clips)
-        # 해당 프레임 위치 렌더링
-        self.preview_widget.render_frame_at_position(frame_position)
+        """프리뷰 화면 업데이트 (개선된 루프 방지 로직)"""
+        # 무한 루프 방지를 위한 플래그 확인 (하지만 합법적인 업데이트는 허용)
+        if (hasattr(self, '_updating_preview') and self._updating_preview):
+            return
+            
+        self._updating_preview = True
+        
+        try:
+            # 타임라인 클립들을 프리뷰에 전달
+            self.preview_widget.set_timeline_clips(self.timeline_widget.clips)
+            # 해당 프레임 위치 렌더링
+            self.preview_widget.render_frame_at_position(frame_position)
+            
+            # 시간 표시 업데이트
+            self.update_time_display(frame_position)
+            
+            print(f"[프리뷰 업데이트] 프레임: {frame_position}")
+            
+        finally:
+            self._updating_preview = False
         
     def preview_single_media(self, media_path):
         """단일 미디어 파일 미리보기 (미디어 패널에서 선택시)"""
         try:
-            self.preview_widget.load_media(media_path)
+            # 프리뷰 위젯에 단일 미디어 로드
+            success = self.preview_widget.load_media(media_path)
+            if success:
+                print(f"[미디어 미리보기] {os.path.basename(media_path)} 로드 성공")
+                # 0프레임부터 시작
+                self.preview_widget.seek_to_frame(0)
+            else:
+                print(f"[미디어 미리보기] {media_path} 로드 실패")
         except Exception as e:
             print(f"미디어 미리보기 실패: {e}")
             
     def on_timeline_changed(self, clip, start_frame, track):
-        """타임라인 변경 시 프리뷰 업데이트"""
+        """타임라인 변경 시 프리뷰 업데이트 (로그 최적화)"""
         # 현재 재생 헤드 위치의 프리뷰 업데이트
         current_frame = self.timeline_widget.playhead_position
-        self.update_preview(current_frame) 
+        self.update_preview(current_frame)
+        
+        # 로그는 중요한 변경사항만 출력
+        print(f"[타임라인 변경] 클립: {clip.name}, 프레임: {start_frame}, 트랙: {track}")
+        
+    def on_clip_selection_changed(self, selected_clips):
+        """클립 선택 변경 이벤트 (로그 최적화)"""
+        if selected_clips:
+            # 선택된 첫 번째 클립을 속성 패널에 설정
+            self.properties_panel.set_clip(selected_clips[0])
+            print(f"[클립 선택] {selected_clips[0].name}")
+        else:
+            # 선택된 클립이 없으면 속성 패널 초기화
+            self.properties_panel.set_clip(None)
+            print("[클립 선택] 선택 해제")
+            
+    def on_property_changed(self, property_name, value):
+        """속성 변경 이벤트"""
+        current_clip = self.properties_panel.current_clip
+        if not current_clip:
+            return
+            
+        print(f"[속성 변경] {current_clip.name}의 {property_name}: {value}")
+        
+        # duration 속성 변경은 현재 차단 (안전상의 이유)
+        if property_name == "duration":
+            print(f"[길이 변경 차단] duration 속성 변경이 차단되었습니다")
+            return
+            
+        # 기존 값 저장 (실행 취소를 위해)
+        old_value = getattr(current_clip, property_name, None)
+        
+        # 속성 적용
+        try:
+            # 특별한 처리가 필요한 속성들
+            if property_name == "name":
+                current_clip.name = value
+            elif property_name == "start_time":
+                current_clip.start_frame = int(value * 30)  # 30fps 기준
+            elif property_name == "duration":
+                current_clip.duration = int(value * 30)  # 30fps 기준
+            elif property_name in ["x", "y"]:
+                setattr(current_clip, f"position_{property_name}", value)
+            elif property_name == "scale":
+                current_clip.scale_x = value / 100.0
+                current_clip.scale_y = value / 100.0
+            elif property_name == "volume":
+                current_clip.volume = value / 100.0
+            elif property_name == "speed":
+                # 속도는 클립 속성에 저장
+                setattr(current_clip, property_name, value)
+            elif property_name in ["subtitle_enabled", "subtitle_text", "font_size", "font_color", "subtitle_position"]:
+                # 자막 관련 속성들
+                setattr(current_clip, property_name, value)
+                print(f"[자막 속성] {property_name} = {value}")
+            elif property_name in ["blur", "chroma_enabled", "chroma_color", "filter", "brightness", "contrast", "saturation"]:
+                # 효과 관련 속성들
+                setattr(current_clip, property_name, value)
+                print(f"[효과 속성] {property_name} = {value}")
+            else:
+                # 일반 속성들
+                setattr(current_clip, property_name, value)
+                
+            # 명령 매니저에 기록 (실행 취소 지원)
+            from ..core.command_manager import PropertyChangeCommand
+            command = PropertyChangeCommand(current_clip, property_name, old_value, value)
+            self.timeline_widget.command_manager.execute_command(command)
+            
+            # 타임라인 업데이트
+            self.timeline_widget.update()
+            
+            # 프리뷰 업데이트
+            self.update_preview(self.timeline_widget.playhead_position)
+            
+        except Exception as e:
+            print(f"속성 적용 오류: {e}")
+            
+    def on_effect_applied(self, effect_name, effect_data):
+        """효과 적용 이벤트"""
+        selected_clips = self.timeline_widget.get_selected_clips()
+        if not selected_clips:
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.warning(self, "효과 적용", "효과를 적용할 클립을 선택해주세요.")
+            return
+            
+        for clip in selected_clips:
+            # 효과 데이터를 클립에 추가
+            effect = {
+                'name': effect_name,
+                'type': effect_data.get('type', 'unknown'),
+                'parameters': effect_data.get('parameters', {})
+            }
+            
+            if not hasattr(clip, 'effects'):
+                clip.effects = []
+                
+            clip.effects.append(effect)
+            
+        # 타임라인 업데이트
+        self.timeline_widget.update()
+        
+        # 프리뷰 업데이트  
+        self.update_preview(self.timeline_widget.playhead_position) 

@@ -212,10 +212,11 @@ class MediaPanel(QWidget):
         if not os.path.exists(file_path):
             return
             
-        # 중복 체크
-        for item in self.media_items:
-            if item['path'] == file_path:
-                return
+        # 중복 체크 (더 빠르게)
+        existing_paths = {item['path'] for item in self.media_items}
+        if file_path in existing_paths:
+            print(f"[미디어패널] 이미 추가된 파일: {os.path.basename(file_path)}")
+            return
                 
         # 미디어 정보 생성
         media_info = self.get_media_info(file_path)

@@ -11,9 +11,21 @@ from typing import Dict, Optional, Tuple
 class MediaAnalyzer:
     """미디어 파일 분석기"""
     
+    # 캐시 시스템
+    _info_cache = {}
+    _cache_size_limit = 100
+    
     @staticmethod
     def get_media_info(file_path: str) -> Dict:
         """미디어 파일 정보 추출"""
+        # 캐시 확인 (파일 경로와 수정 시간으로 키 생성)
+        cache_key = file_path
+        if os.path.exists(file_path):
+            cache_key = f"{file_path}_{os.path.getmtime(file_path)}"
+            
+        if cache_key in MediaAnalyzer._info_cache:
+            return MediaAnalyzer._info_cache[cache_key].copy()
+        
         if not os.path.exists(file_path):
             return MediaAnalyzer._get_default_info(file_path)
             
@@ -34,7 +46,16 @@ class MediaAnalyzer:
                 return MediaAnalyzer._get_default_info(file_path)
                 
             data = json.loads(result.stdout)
-            return MediaAnalyzer._parse_ffprobe_data(file_path, data)
+            info = MediaAnalyzer._parse_ffprobe_data(file_path, data)
+            
+            # 캐시에 저장 (크기 제한)
+            if len(MediaAnalyzer._info_cache) >= MediaAnalyzer._cache_size_limit:
+                # 가장 오래된 항목 제거
+                oldest_key = next(iter(MediaAnalyzer._info_cache))
+                del MediaAnalyzer._info_cache[oldest_key]
+                
+            MediaAnalyzer._info_cache[cache_key] = info.copy()
+            return info
             
         except (subprocess.TimeoutExpired, json.JSONDecodeError, FileNotFoundError):
             # FFprobe가 없거나 실패한 경우 기본값 반환
@@ -132,13 +153,8 @@ class MediaAnalyzer:
         timeline_fps = 30.0
         info['duration_frames'] = int(info['duration'] * timeline_fps)
         
-        # 디버그 출력
-        print(f"미디어 분석 결과: {os.path.basename(file_path)}")
-        print(f"  길이: {info['duration']:.2f}초")
-        print(f"  프레임: {info['duration_frames']}프레임")
-        print(f"  has_video: {info['has_video']}, has_audio: {info['has_audio']}")
-        print(f"  타입: {info['media_type']}")
-        print(f"  스트림 정보: {[s.get('codec_type') for s in data.get('streams', [])]}")
+        # 디버그 출력 (간단하게)
+        print(f"[미디어분석] {os.path.basename(file_path)}: {info['duration']:.1f}초, {info['media_type']}")
         
         return info
     
@@ -193,7 +209,7 @@ class MediaAnalyzer:
     
     @staticmethod
     def get_thumbnail_path(file_path: str, time_seconds: float = 1.0) -> Optional[str]:
-        """비디오 파일의 썸네일 생성 (FFmpeg 사용)"""
+        """비디오 파일의 썸네일 생성 (FFmpeg 사용) - 시간별 썸네일 지원"""
         if not os.path.exists(file_path):
             return None
             
@@ -201,9 +217,12 @@ class MediaAnalyzer:
         cache_dir = os.path.join(os.path.dirname(__file__), '..', '..', 'cache', 'thumbnails')
         os.makedirs(cache_dir, exist_ok=True)
         
-        file_hash = str(hash(file_path + str(os.path.getmtime(file_path))))
-        thumbnail_path = os.path.join(cache_dir, f"thumb_{file_hash}.jpg")
+        # 시간 정보를 포함한 고유 해시 생성 (시간별로 다른 썸네일)
+        time_rounded = round(time_seconds, 1)  # 0.1초 단위로 반올림
+        file_hash = str(hash(file_path + str(os.path.getmtime(file_path)) + str(time_rounded)))
+        thumbnail_path = os.path.join(cache_dir, f"thumb_{file_hash}_t{time_rounded:.1f}.jpg")
         
+        # 이미 생성된 썸네일이 있으면 반환
         if os.path.exists(thumbnail_path):
             return thumbnail_path
             
@@ -221,14 +240,15 @@ class MediaAnalyzer:
                 thumbnail_path
             ]
             
-            print(f"썸네일 생성 시도: {os.path.basename(file_path)} @ {time_seconds}초")
+            # 로그 출력 (디버깅용)
             result = subprocess.run(cmd, capture_output=True, timeout=30, text=True)
             
             if result.returncode == 0 and os.path.exists(thumbnail_path):
-                print(f"썸네일 생성 성공: {thumbnail_path}")
+                # 성공 로그 (시간 정보 포함)
+                print(f"[썸네일 생성] {os.path.basename(file_path)} - {time_seconds:.1f}초")
                 return thumbnail_path
             else:
-                print(f"FFmpeg 오류: {result.stderr}")
+                print(f"FFmpeg 썸네일 생성 실패: {result.stderr}")
                 
         except (subprocess.TimeoutExpired, FileNotFoundError) as e:
             print(f"썸네일 생성 실패: {e}")

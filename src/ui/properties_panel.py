@@ -1,24 +1,25 @@
 """
 BLOUcut 속성 패널
-선택된 클립의 속성 편집
+선택된 클립의 속성을 편집할 수 있는 패널
 """
 
-from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton, 
-                           QLabel, QSlider, QSpinBox, QDoubleSpinBox, QGroupBox,
-                           QComboBox, QCheckBox, QLineEdit, QScrollArea,
-                           QColorDialog, QFrame)
+import os
+from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
+                           QSlider, QSpinBox, QDoubleSpinBox, QCheckBox,
+                           QComboBox, QPushButton, QGroupBox, QLineEdit,
+                           QColorDialog, QFileDialog, QScrollArea, QFrame)
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QFont, QColor
+from PyQt6.QtGui import QColor, QPalette
 
 class PropertiesPanel(QWidget):
     """속성 패널"""
     
     # 시그널
-    property_changed = pyqtSignal(str, object)  # 속성 이름, 값
+    property_changed = pyqtSignal(str, object)  # 속성명, 값
     
     def __init__(self):
         super().__init__()
-        self.current_clips = []  # 현재 선택된 클립들
+        self.current_clip = None
         self.init_ui()
         
     def init_ui(self):
@@ -30,299 +31,333 @@ class PropertiesPanel(QWidget):
         # 스크롤 영역
         scroll_area = QScrollArea()
         scroll_widget = QWidget()
-        self.scroll_layout = QVBoxLayout(scroll_widget)
+        scroll_layout = QVBoxLayout(scroll_widget)
         
-        # 클립 정보 그룹
-        self.info_group = self.create_info_group()
-        self.scroll_layout.addWidget(self.info_group)
+        # 클립 정보
+        self.clip_info_group = self.create_clip_info_group()
+        scroll_layout.addWidget(self.clip_info_group)
         
-        # 변형 그룹
+        # 변형 속성
         self.transform_group = self.create_transform_group()
-        self.scroll_layout.addWidget(self.transform_group)
+        scroll_layout.addWidget(self.transform_group)
         
-        # 오디오 그룹
+        # 오디오 속성
         self.audio_group = self.create_audio_group()
-        self.scroll_layout.addWidget(self.audio_group)
+        scroll_layout.addWidget(self.audio_group)
         
-        # 색상 보정 그룹
-        self.color_group = self.create_color_group()
-        self.scroll_layout.addWidget(self.color_group)
+        # 비디오 속성
+        self.video_group = self.create_video_group()
+        scroll_layout.addWidget(self.video_group)
         
-        # 효과 그룹
+        # 자막 속성
+        self.subtitle_group = self.create_subtitle_group()
+        scroll_layout.addWidget(self.subtitle_group)
+        
+        # 효과 속성
         self.effects_group = self.create_effects_group()
-        self.scroll_layout.addWidget(self.effects_group)
+        scroll_layout.addWidget(self.effects_group)
         
-        self.scroll_layout.addStretch()
+        scroll_layout.addStretch()
         
         scroll_area.setWidget(scroll_widget)
         scroll_area.setWidgetResizable(True)
         layout.addWidget(scroll_area)
         
-        # 초기에는 모든 그룹 숨김
-        self.hide_all_groups()
-        
         self.apply_styles()
         
-    def create_info_group(self):
+    def create_clip_info_group(self):
         """클립 정보 그룹"""
         group = QGroupBox("클립 정보")
         layout = QVBoxLayout(group)
         
         # 클립 이름
-        self.clip_name_label = QLabel("클립 이름: -")
-        layout.addWidget(self.clip_name_label)
+        name_layout = QHBoxLayout()
+        name_layout.addWidget(QLabel("이름:"))
+        self.clip_name_edit = QLineEdit()
+        self.clip_name_edit.textChanged.connect(lambda text: self.emit_property_change("name", text))
+        name_layout.addWidget(self.clip_name_edit)
+        layout.addLayout(name_layout)
         
-        # 클립 타입
-        self.clip_type_label = QLabel("타입: -")
-        layout.addWidget(self.clip_type_label)
+        # 시작 시간
+        start_layout = QHBoxLayout()
+        start_layout.addWidget(QLabel("시작:"))
+        self.start_time_spin = QDoubleSpinBox()
+        self.start_time_spin.setRange(0, 3600)
+        self.start_time_spin.setSuffix("초")
+        self.start_time_spin.valueChanged.connect(lambda val: self.emit_property_change("start_time", val))
+        start_layout.addWidget(self.start_time_spin)
+        layout.addLayout(start_layout)
         
-        # 지속시간
-        self.duration_label = QLabel("길이: -")
-        layout.addWidget(self.duration_label)
-        
-        # 시작/종료 시간
-        self.time_range_label = QLabel("시간: -")
-        layout.addWidget(self.time_range_label)
+        # 지속 시간
+        duration_layout = QHBoxLayout()
+        duration_layout.addWidget(QLabel("길이:"))
+        self.duration_spin = QDoubleSpinBox()
+        self.duration_spin.setRange(0.1, 3600)
+        self.duration_spin.setSuffix("초")
+        self.duration_spin.valueChanged.connect(lambda val: self.emit_property_change("duration", val))
+        duration_layout.addWidget(self.duration_spin)
+        layout.addLayout(duration_layout)
         
         return group
         
     def create_transform_group(self):
-        """변형 그룹"""
+        """변형 속성 그룹"""
         group = QGroupBox("변형")
         layout = QVBoxLayout(group)
         
-        # 위치
-        pos_layout = QHBoxLayout()
-        pos_layout.addWidget(QLabel("위치:"))
+        # 위치 X
+        x_layout = QHBoxLayout()
+        x_layout.addWidget(QLabel("X:"))
+        self.x_spin = QSpinBox()
+        self.x_spin.setRange(-9999, 9999)
+        self.x_spin.valueChanged.connect(lambda val: self.emit_property_change("x", val))
+        x_layout.addWidget(self.x_spin)
+        layout.addLayout(x_layout)
         
-        self.pos_x_spin = QDoubleSpinBox()
-        self.pos_x_spin.setRange(-1000, 1000)
-        self.pos_x_spin.setSingleStep(0.1)
-        self.pos_x_spin.valueChanged.connect(lambda v: self.on_property_changed('position_x', v))
-        pos_layout.addWidget(self.pos_x_spin)
+        # 위치 Y
+        y_layout = QHBoxLayout()
+        y_layout.addWidget(QLabel("Y:"))
+        self.y_spin = QSpinBox()
+        self.y_spin.setRange(-9999, 9999)
+        self.y_spin.valueChanged.connect(lambda val: self.emit_property_change("y", val))
+        y_layout.addWidget(self.y_spin)
+        layout.addLayout(y_layout)
         
-        self.pos_y_spin = QDoubleSpinBox()
-        self.pos_y_spin.setRange(-1000, 1000)
-        self.pos_y_spin.setSingleStep(0.1)
-        self.pos_y_spin.valueChanged.connect(lambda v: self.on_property_changed('position_y', v))
-        pos_layout.addWidget(self.pos_y_spin)
-        
-        layout.addLayout(pos_layout)
-        
-        # 크기
+        # 크기 조절
         scale_layout = QHBoxLayout()
         scale_layout.addWidget(QLabel("크기:"))
+        self.scale_slider = QSlider(Qt.Orientation.Horizontal)
+        self.scale_slider.setRange(10, 500)  # 10% ~ 500%
+        self.scale_slider.setValue(100)
+        self.scale_slider.valueChanged.connect(self.on_scale_changed)
+        scale_layout.addWidget(self.scale_slider)
         
-        self.scale_x_spin = QDoubleSpinBox()
-        self.scale_x_spin.setRange(0.1, 10.0)
-        self.scale_x_spin.setSingleStep(0.1)
-        self.scale_x_spin.setValue(1.0)
-        self.scale_x_spin.valueChanged.connect(lambda v: self.on_property_changed('scale_x', v))
-        scale_layout.addWidget(self.scale_x_spin)
-        
-        self.scale_y_spin = QDoubleSpinBox()
-        self.scale_y_spin.setRange(0.1, 10.0)
-        self.scale_y_spin.setSingleStep(0.1)
-        self.scale_y_spin.setValue(1.0)
-        self.scale_y_spin.valueChanged.connect(lambda v: self.on_property_changed('scale_y', v))
-        scale_layout.addWidget(self.scale_y_spin)
-        
-        # 비율 유지 체크박스
-        self.uniform_scale_check = QCheckBox("비율 유지")
-        self.uniform_scale_check.setChecked(True)
-        scale_layout.addWidget(self.uniform_scale_check)
-        
+        self.scale_label = QLabel("100%")
+        scale_layout.addWidget(self.scale_label)
         layout.addLayout(scale_layout)
         
         # 회전
         rotation_layout = QHBoxLayout()
         rotation_layout.addWidget(QLabel("회전:"))
-        
-        self.rotation_slider = QSlider(Qt.Orientation.Horizontal)
-        self.rotation_slider.setRange(0, 360)
-        self.rotation_slider.valueChanged.connect(lambda v: self.on_property_changed('rotation', v))
-        rotation_layout.addWidget(self.rotation_slider)
-        
         self.rotation_spin = QSpinBox()
-        self.rotation_spin.setRange(0, 360)
+        self.rotation_spin.setRange(-360, 360)
         self.rotation_spin.setSuffix("°")
-        self.rotation_spin.valueChanged.connect(self.rotation_slider.setValue)
-        self.rotation_slider.valueChanged.connect(self.rotation_spin.setValue)
+        self.rotation_spin.valueChanged.connect(lambda val: self.emit_property_change("rotation", val))
         rotation_layout.addWidget(self.rotation_spin)
-        
         layout.addLayout(rotation_layout)
         
         # 불투명도
         opacity_layout = QHBoxLayout()
         opacity_layout.addWidget(QLabel("불투명도:"))
-        
         self.opacity_slider = QSlider(Qt.Orientation.Horizontal)
         self.opacity_slider.setRange(0, 100)
         self.opacity_slider.setValue(100)
-        self.opacity_slider.valueChanged.connect(lambda v: self.on_property_changed('opacity', v/100.0))
+        self.opacity_slider.valueChanged.connect(self.on_opacity_changed)
         opacity_layout.addWidget(self.opacity_slider)
         
-        self.opacity_spin = QSpinBox()
-        self.opacity_spin.setRange(0, 100)
-        self.opacity_spin.setValue(100)
-        self.opacity_spin.setSuffix("%")
-        self.opacity_spin.valueChanged.connect(self.opacity_slider.setValue)
-        self.opacity_slider.valueChanged.connect(self.opacity_spin.setValue)
-        opacity_layout.addWidget(self.opacity_spin)
-        
+        self.opacity_label = QLabel("100%")
+        opacity_layout.addWidget(self.opacity_label)
         layout.addLayout(opacity_layout)
         
         return group
         
     def create_audio_group(self):
-        """오디오 그룹"""
+        """오디오 속성 그룹"""
         group = QGroupBox("오디오")
         layout = QVBoxLayout(group)
         
         # 볼륨
         volume_layout = QHBoxLayout()
         volume_layout.addWidget(QLabel("볼륨:"))
-        
         self.volume_slider = QSlider(Qt.Orientation.Horizontal)
-        self.volume_slider.setRange(0, 200)
+        self.volume_slider.setRange(0, 200)  # 0% ~ 200%
         self.volume_slider.setValue(100)
-        self.volume_slider.valueChanged.connect(lambda v: self.on_property_changed('volume', v/100.0))
+        self.volume_slider.valueChanged.connect(self.on_volume_changed)
         volume_layout.addWidget(self.volume_slider)
         
-        self.volume_spin = QSpinBox()
-        self.volume_spin.setRange(0, 200)
-        self.volume_spin.setValue(100)
-        self.volume_spin.setSuffix("%")
-        self.volume_spin.valueChanged.connect(self.volume_slider.setValue)
-        self.volume_slider.valueChanged.connect(self.volume_spin.setValue)
-        volume_layout.addWidget(self.volume_spin)
-        
+        self.volume_label = QLabel("100%")
+        volume_layout.addWidget(self.volume_label)
         layout.addLayout(volume_layout)
+        
+        # 음소거
+        self.mute_checkbox = QCheckBox("음소거")
+        self.mute_checkbox.toggled.connect(lambda checked: self.emit_property_change("muted", checked))
+        layout.addWidget(self.mute_checkbox)
         
         # 페이드 인
         fade_in_layout = QHBoxLayout()
         fade_in_layout.addWidget(QLabel("페이드 인:"))
-        
-        self.fade_in_spin = QSpinBox()
-        self.fade_in_spin.setRange(0, 300)
-        self.fade_in_spin.setSuffix(" 프레임")
-        self.fade_in_spin.valueChanged.connect(lambda v: self.on_property_changed('fade_in', v))
+        self.fade_in_spin = QDoubleSpinBox()
+        self.fade_in_spin.setRange(0, 10)
+        self.fade_in_spin.setSuffix("초")
+        self.fade_in_spin.valueChanged.connect(lambda val: self.emit_property_change("fade_in", val))
         fade_in_layout.addWidget(self.fade_in_spin)
-        
         layout.addLayout(fade_in_layout)
         
         # 페이드 아웃
         fade_out_layout = QHBoxLayout()
         fade_out_layout.addWidget(QLabel("페이드 아웃:"))
-        
-        self.fade_out_spin = QSpinBox()
-        self.fade_out_spin.setRange(0, 300)
-        self.fade_out_spin.setSuffix(" 프레임")
-        self.fade_out_spin.valueChanged.connect(lambda v: self.on_property_changed('fade_out', v))
+        self.fade_out_spin = QDoubleSpinBox()
+        self.fade_out_spin.setRange(0, 10)
+        self.fade_out_spin.setSuffix("초")
+        self.fade_out_spin.valueChanged.connect(lambda val: self.emit_property_change("fade_out", val))
         fade_out_layout.addWidget(self.fade_out_spin)
-        
         layout.addLayout(fade_out_layout)
         
         return group
         
-    def create_color_group(self):
-        """색상 보정 그룹"""
-        group = QGroupBox("색상 보정")
+    def create_video_group(self):
+        """비디오 속성 그룹"""
+        group = QGroupBox("비디오")
         layout = QVBoxLayout(group)
+        
+        # 속도
+        speed_layout = QHBoxLayout()
+        speed_layout.addWidget(QLabel("속도:"))
+        self.speed_slider = QSlider(Qt.Orientation.Horizontal)
+        self.speed_slider.setRange(25, 400)  # 0.25x ~ 4.0x
+        self.speed_slider.setValue(100)
+        self.speed_slider.valueChanged.connect(self.on_speed_changed)
+        speed_layout.addWidget(self.speed_slider)
+        
+        self.speed_label = QLabel("1.0x")
+        speed_layout.addWidget(self.speed_label)
+        layout.addLayout(speed_layout)
+        
+        # 뒤집기
+        flip_layout = QHBoxLayout()
+        self.flip_h_checkbox = QCheckBox("좌우 뒤집기")
+        self.flip_h_checkbox.toggled.connect(lambda checked: self.emit_property_change("flip_horizontal", checked))
+        flip_layout.addWidget(self.flip_h_checkbox)
+        
+        self.flip_v_checkbox = QCheckBox("상하 뒤집기")
+        self.flip_v_checkbox.toggled.connect(lambda checked: self.emit_property_change("flip_vertical", checked))
+        flip_layout.addWidget(self.flip_v_checkbox)
+        layout.addLayout(flip_layout)
+        
+        # 색상 조정
+        color_layout = QVBoxLayout()
         
         # 밝기
         brightness_layout = QHBoxLayout()
         brightness_layout.addWidget(QLabel("밝기:"))
-        
         self.brightness_slider = QSlider(Qt.Orientation.Horizontal)
         self.brightness_slider.setRange(-100, 100)
         self.brightness_slider.setValue(0)
-        self.brightness_slider.valueChanged.connect(lambda v: self.on_property_changed('brightness', v/100.0))
+        self.brightness_slider.valueChanged.connect(lambda val: self.emit_property_change("brightness", val))
         brightness_layout.addWidget(self.brightness_slider)
-        
-        self.brightness_spin = QSpinBox()
-        self.brightness_spin.setRange(-100, 100)
-        self.brightness_spin.setValue(0)
-        self.brightness_spin.valueChanged.connect(self.brightness_slider.setValue)
-        self.brightness_slider.valueChanged.connect(self.brightness_spin.setValue)
-        brightness_layout.addWidget(self.brightness_spin)
-        
-        layout.addLayout(brightness_layout)
+        color_layout.addLayout(brightness_layout)
         
         # 대비
         contrast_layout = QHBoxLayout()
         contrast_layout.addWidget(QLabel("대비:"))
-        
         self.contrast_slider = QSlider(Qt.Orientation.Horizontal)
         self.contrast_slider.setRange(-100, 100)
         self.contrast_slider.setValue(0)
-        self.contrast_slider.valueChanged.connect(lambda v: self.on_property_changed('contrast', v/100.0))
+        self.contrast_slider.valueChanged.connect(lambda val: self.emit_property_change("contrast", val))
         contrast_layout.addWidget(self.contrast_slider)
-        
-        self.contrast_spin = QSpinBox()
-        self.contrast_spin.setRange(-100, 100)
-        self.contrast_spin.setValue(0)
-        self.contrast_spin.valueChanged.connect(self.contrast_slider.setValue)
-        self.contrast_slider.valueChanged.connect(self.contrast_spin.setValue)
-        contrast_layout.addWidget(self.contrast_spin)
-        
-        layout.addLayout(contrast_layout)
+        color_layout.addLayout(contrast_layout)
         
         # 채도
         saturation_layout = QHBoxLayout()
         saturation_layout.addWidget(QLabel("채도:"))
-        
         self.saturation_slider = QSlider(Qt.Orientation.Horizontal)
         self.saturation_slider.setRange(-100, 100)
         self.saturation_slider.setValue(0)
-        self.saturation_slider.valueChanged.connect(lambda v: self.on_property_changed('saturation', v/100.0))
+        self.saturation_slider.valueChanged.connect(lambda val: self.emit_property_change("saturation", val))
         saturation_layout.addWidget(self.saturation_slider)
+        color_layout.addLayout(saturation_layout)
         
-        self.saturation_spin = QSpinBox()
-        self.saturation_spin.setRange(-100, 100)
-        self.saturation_spin.setValue(0)
-        self.saturation_spin.valueChanged.connect(self.saturation_slider.setValue)
-        self.saturation_slider.valueChanged.connect(self.saturation_spin.setValue)
-        saturation_layout.addWidget(self.saturation_spin)
+        layout.addLayout(color_layout)
         
-        layout.addLayout(saturation_layout)
+        return group
         
-        # 색조
-        hue_layout = QHBoxLayout()
-        hue_layout.addWidget(QLabel("색조:"))
+    def create_subtitle_group(self):
+        """자막 속성 그룹"""
+        group = QGroupBox("자막")
+        layout = QVBoxLayout(group)
         
-        self.hue_slider = QSlider(Qt.Orientation.Horizontal)
-        self.hue_slider.setRange(-180, 180)
-        self.hue_slider.setValue(0)
-        self.hue_slider.valueChanged.connect(lambda v: self.on_property_changed('hue', v))
-        hue_layout.addWidget(self.hue_slider)
+        # 자막 활성화
+        self.subtitle_enabled = QCheckBox("자막 표시")
+        self.subtitle_enabled.toggled.connect(lambda checked: self.emit_property_change("subtitle_enabled", checked))
+        layout.addWidget(self.subtitle_enabled)
         
-        self.hue_spin = QSpinBox()
-        self.hue_spin.setRange(-180, 180)
-        self.hue_spin.setValue(0)
-        self.hue_spin.setSuffix("°")
-        self.hue_spin.valueChanged.connect(self.hue_slider.setValue)
-        self.hue_slider.valueChanged.connect(self.hue_spin.setValue)
-        hue_layout.addWidget(self.hue_spin)
+        # 자막 텍스트
+        text_layout = QVBoxLayout()
+        text_layout.addWidget(QLabel("텍스트:"))
+        self.subtitle_text = QLineEdit()
+        self.subtitle_text.textChanged.connect(lambda text: self.emit_property_change("subtitle_text", text))
+        text_layout.addWidget(self.subtitle_text)
+        layout.addLayout(text_layout)
         
-        layout.addLayout(hue_layout)
+        # 폰트 크기
+        font_size_layout = QHBoxLayout()
+        font_size_layout.addWidget(QLabel("크기:"))
+        self.font_size_spin = QSpinBox()
+        self.font_size_spin.setRange(8, 128)
+        self.font_size_spin.setValue(24)
+        self.font_size_spin.valueChanged.connect(lambda val: self.emit_property_change("font_size", val))
+        font_size_layout.addWidget(self.font_size_spin)
+        layout.addLayout(font_size_layout)
+        
+        # 폰트 색상
+        color_layout = QHBoxLayout()
+        color_layout.addWidget(QLabel("색상:"))
+        self.font_color_button = QPushButton("선택")
+        self.font_color_button.clicked.connect(self.choose_font_color)
+        self.font_color = QColor(255, 255, 255)  # 기본 흰색
+        color_layout.addWidget(self.font_color_button)
+        layout.addLayout(color_layout)
+        
+        # 자막 위치
+        position_layout = QHBoxLayout()
+        position_layout.addWidget(QLabel("위치:"))
+        self.subtitle_position = QComboBox()
+        self.subtitle_position.addItems(["하단", "중앙", "상단"])
+        self.subtitle_position.currentTextChanged.connect(lambda text: self.emit_property_change("subtitle_position", text))
+        position_layout.addWidget(self.subtitle_position)
+        layout.addLayout(position_layout)
         
         return group
         
     def create_effects_group(self):
-        """효과 그룹"""
-        group = QGroupBox("적용된 효과")
+        """효과 속성 그룹"""
+        group = QGroupBox("효과")
         layout = QVBoxLayout(group)
         
-        # 효과 리스트
-        self.effects_list = QLabel("적용된 효과가 없습니다.")
-        self.effects_list.setWordWrap(True)
-        layout.addWidget(self.effects_list)
+        # 블러 효과
+        blur_layout = QHBoxLayout()
+        blur_layout.addWidget(QLabel("블러:"))
+        self.blur_slider = QSlider(Qt.Orientation.Horizontal)
+        self.blur_slider.setRange(0, 50)
+        self.blur_slider.setValue(0)
+        self.blur_slider.valueChanged.connect(lambda val: self.emit_property_change("blur", val))
+        blur_layout.addWidget(self.blur_slider)
+        layout.addLayout(blur_layout)
         
-        # 효과 제거 버튼
-        remove_effects_button = QPushButton("모든 효과 제거")
-        remove_effects_button.clicked.connect(self.remove_all_effects)
-        layout.addWidget(remove_effects_button)
+        # 크로마키
+        chroma_layout = QVBoxLayout()
+        self.chroma_enabled = QCheckBox("크로마키")
+        self.chroma_enabled.toggled.connect(lambda checked: self.emit_property_change("chroma_enabled", checked))
+        chroma_layout.addWidget(self.chroma_enabled)
+        
+        chroma_color_layout = QHBoxLayout()
+        chroma_color_layout.addWidget(QLabel("키 색상:"))
+        self.chroma_color_button = QPushButton("선택")
+        self.chroma_color_button.clicked.connect(self.choose_chroma_color)
+        self.chroma_color = QColor(0, 255, 0)  # 기본 녹색
+        chroma_color_layout.addWidget(self.chroma_color_button)
+        chroma_layout.addLayout(chroma_color_layout)
+        layout.addLayout(chroma_layout)
+        
+        # 필터 프리셋
+        filter_layout = QHBoxLayout()
+        filter_layout.addWidget(QLabel("필터:"))
+        self.filter_combo = QComboBox()
+        self.filter_combo.addItems(["없음", "세피아", "흑백", "비네팅", "영화"])
+        self.filter_combo.currentTextChanged.connect(lambda text: self.emit_property_change("filter", text))
+        filter_layout.addWidget(self.filter_combo)
+        layout.addLayout(filter_layout)
         
         return group
         
@@ -338,7 +373,7 @@ class PropertiesPanel(QWidget):
                 font-weight: bold;
                 border: 2px solid #555;
                 border-radius: 5px;
-                margin-top: 10px;
+                margin: 10px 0;
                 padding-top: 10px;
             }
             
@@ -346,7 +381,6 @@ class PropertiesPanel(QWidget):
                 subcontrol-origin: margin;
                 left: 10px;
                 padding: 0 5px 0 5px;
-                color: #4CAF50;
             }
             
             QSlider::groove:horizontal {
@@ -364,20 +398,30 @@ class PropertiesPanel(QWidget):
                 margin: -3px 0;
             }
             
-            QSlider::handle:horizontal:hover {
-                background: #45a049;
-            }
-            
-            QSpinBox, QDoubleSpinBox {
+            QPushButton {
                 background-color: #555;
                 border: 1px solid #777;
                 border-radius: 3px;
-                padding: 2px;
-                min-width: 60px;
+                padding: 5px 10px;
+                font-weight: bold;
             }
             
-            QSpinBox:focus, QDoubleSpinBox:focus {
-                border-color: #4CAF50;
+            QPushButton:hover {
+                background-color: #666;
+            }
+            
+            QSpinBox, QDoubleSpinBox, QLineEdit {
+                background-color: #555;
+                border: 1px solid #777;
+                border-radius: 3px;
+                padding: 5px;
+            }
+            
+            QComboBox {
+                background-color: #555;
+                border: 1px solid #777;
+                border-radius: 3px;
+                padding: 5px;
             }
             
             QCheckBox::indicator {
@@ -396,211 +440,135 @@ class PropertiesPanel(QWidget):
                 border: 1px solid #777;
                 border-radius: 3px;
             }
-            
-            QPushButton {
-                background-color: #555;
-                border: 1px solid #777;
-                border-radius: 3px;
-                padding: 5px 10px;
-                font-weight: bold;
-            }
-            
-            QPushButton:hover {
-                background-color: #666;
-            }
-            
-            QPushButton:pressed {
-                background-color: #444;
-            }
         """)
         
-    def hide_all_groups(self):
-        """모든 그룹 숨기기"""
-        self.info_group.hide()
-        self.transform_group.hide()
-        self.audio_group.hide()
-        self.color_group.hide()
-        self.effects_group.hide()
+    def set_clip(self, clip):
+        """클립 설정"""
+        print(f"[속성패널] set_clip 호출: {clip.name if clip else 'None'}")
+        if clip:
+            print(f"[속성패널] 클립 길이: {clip.duration}")
         
-    def update_properties(self, clips):
-        """선택된 클립의 속성 업데이트"""
-        self.current_clips = clips
+        self.current_clip = clip
         
-        if not clips:
-            self.hide_all_groups()
+        if clip is None:
+            self.clear_properties()
             return
             
-        # 첫 번째 클립 기준으로 표시
-        clip = clips[0]
+        # 개별 위젯의 시그널 일시 차단
+        widgets_to_block = [
+            self.clip_name_edit, self.start_time_spin, self.duration_spin,
+            self.x_spin, self.y_spin, self.scale_slider, self.rotation_spin, self.opacity_slider,
+            self.volume_slider, self.mute_checkbox, self.speed_slider,
+            self.subtitle_enabled, self.subtitle_text
+        ]
         
-        # 정보 그룹 업데이트
-        self.update_info_group(clip)
+        # 각 위젯의 시그널 차단 상태 저장
+        old_blocked_states = {}
+        for widget in widgets_to_block:
+            old_blocked_states[widget] = widget.signalsBlocked()
+            widget.blockSignals(True)
         
-        # 변형 그룹 업데이트
-        self.update_transform_group(clip)
-        
-        # 오디오 그룹 업데이트 (비디오/오디오 클립만)
-        if hasattr(clip, 'clip_type') and clip.clip_type.value in ['video', 'audio']:
-            self.update_audio_group(clip)
-            self.audio_group.show()
-        else:
-            self.audio_group.hide()
+        try:
+            # 클립 정보 업데이트
+            self.clip_name_edit.setText(clip.name)
+            self.start_time_spin.setValue(clip.start_frame / 30.0)  # 30fps 기준
+            self.duration_spin.setValue(clip.duration / 30.0)
             
-        # 색상 보정 그룹 업데이트 (비디오/이미지 클립만)
-        if hasattr(clip, 'clip_type') and clip.clip_type.value in ['video', 'image']:
-            self.update_color_group(clip)
-            self.color_group.show()
-        else:
-            self.color_group.hide()
+            # 변형 속성 (기본값 설정)
+            self.x_spin.setValue(getattr(clip, 'x', 0))
+            self.y_spin.setValue(getattr(clip, 'y', 0))
+            self.scale_slider.setValue(int(getattr(clip, 'scale', 100)))
+            self.rotation_spin.setValue(int(getattr(clip, 'rotation', 0)))
+            self.opacity_slider.setValue(int(getattr(clip, 'opacity', 100)))
             
-        # 효과 그룹 업데이트
-        self.update_effects_group(clip)
-        
-        # 그룹들 표시
-        self.info_group.show()
-        self.transform_group.show()
-        self.effects_group.show()
-        
-    def update_info_group(self, clip):
-        """정보 그룹 업데이트"""
-        self.clip_name_label.setText(f"클립 이름: {clip.name}")
-        self.clip_type_label.setText(f"타입: {clip.clip_type.value if hasattr(clip, 'clip_type') else '알 수 없음'}")
-        
-        # 지속시간 (프레임을 시간으로 변환)
-        total_seconds = clip.duration / 30  # 30fps 기준
-        minutes = int(total_seconds // 60)
-        seconds = int(total_seconds % 60)
-        frames = clip.duration % 30
-        duration_str = f"{minutes:02d}:{seconds:02d}:{frames:02d}"
-        self.duration_label.setText(f"길이: {duration_str}")
-        
-        # 시간 범위
-        start_seconds = clip.start_frame / 30
-        start_minutes = int(start_seconds // 60)
-        start_secs = int(start_seconds % 60)
-        start_frames = clip.start_frame % 30
-        
-        end_frame = clip.start_frame + clip.duration
-        end_seconds = end_frame / 30
-        end_minutes = int(end_seconds // 60)
-        end_secs = int(end_seconds % 60)
-        end_frame_remainder = end_frame % 30
-        
-        time_range = f"{start_minutes:02d}:{start_secs:02d}:{start_frames:02d} - {end_minutes:02d}:{end_secs:02d}:{end_frame_remainder:02d}"
-        self.time_range_label.setText(f"시간: {time_range}")
-        
-    def update_transform_group(self, clip):
-        """변형 그룹 업데이트"""
-        # 시그널 연결 임시 해제
-        self.disconnect_transform_signals()
-        
-        self.pos_x_spin.setValue(clip.position_x)
-        self.pos_y_spin.setValue(clip.position_y)
-        self.scale_x_spin.setValue(clip.scale_x)
-        self.scale_y_spin.setValue(clip.scale_y)
-        self.rotation_slider.setValue(int(clip.rotation))
-        self.opacity_slider.setValue(int(clip.opacity * 100))
-        
-        # 시그널 다시 연결
-        self.connect_transform_signals()
-        
-    def update_audio_group(self, clip):
-        """오디오 그룹 업데이트"""
-        # 시그널 연결 임시 해제
-        self.disconnect_audio_signals()
-        
-        self.volume_slider.setValue(int(clip.volume * 100))
-        self.fade_in_spin.setValue(clip.fade_in)
-        self.fade_out_spin.setValue(clip.fade_out)
-        
-        # 시그널 다시 연결
-        self.connect_audio_signals()
-        
-    def update_color_group(self, clip):
-        """색상 보정 그룹 업데이트"""
-        # 시그널 연결 임시 해제
-        self.disconnect_color_signals()
-        
-        self.brightness_slider.setValue(int(clip.brightness * 100))
-        self.contrast_slider.setValue(int(clip.contrast * 100))
-        self.saturation_slider.setValue(int(clip.saturation * 100))
-        self.hue_slider.setValue(int(clip.hue))
-        
-        # 시그널 다시 연결
-        self.connect_color_signals()
-        
-    def update_effects_group(self, clip):
-        """효과 그룹 업데이트"""
-        if clip.effects:
-            effects_text = "\n".join([f"• {effect}" for effect in clip.effects])
-            self.effects_list.setText(effects_text)
-        else:
-            self.effects_list.setText("적용된 효과가 없습니다.")
+            # 오디오 속성
+            self.volume_slider.setValue(int(getattr(clip, 'volume', 100)))
+            self.mute_checkbox.setChecked(getattr(clip, 'muted', False))
             
-    def disconnect_transform_signals(self):
-        """변형 시그널 연결 해제"""
-        self.pos_x_spin.valueChanged.disconnect()
-        self.pos_y_spin.valueChanged.disconnect()
-        self.scale_x_spin.valueChanged.disconnect()
-        self.scale_y_spin.valueChanged.disconnect()
-        self.rotation_slider.valueChanged.disconnect()
-        self.opacity_slider.valueChanged.disconnect()
-        
-    def connect_transform_signals(self):
-        """변형 시그널 연결"""
-        self.pos_x_spin.valueChanged.connect(lambda v: self.on_property_changed('position_x', v))
-        self.pos_y_spin.valueChanged.connect(lambda v: self.on_property_changed('position_y', v))
-        self.scale_x_spin.valueChanged.connect(lambda v: self.on_property_changed('scale_x', v))
-        self.scale_y_spin.valueChanged.connect(lambda v: self.on_property_changed('scale_y', v))
-        self.rotation_slider.valueChanged.connect(lambda v: self.on_property_changed('rotation', v))
-        self.opacity_slider.valueChanged.connect(lambda v: self.on_property_changed('opacity', v/100.0))
-        
-    def disconnect_audio_signals(self):
-        """오디오 시그널 연결 해제"""
-        self.volume_slider.valueChanged.disconnect()
-        self.fade_in_spin.valueChanged.disconnect()
-        self.fade_out_spin.valueChanged.disconnect()
-        
-    def connect_audio_signals(self):
-        """오디오 시그널 연결"""
-        self.volume_slider.valueChanged.connect(lambda v: self.on_property_changed('volume', v/100.0))
-        self.fade_in_spin.valueChanged.connect(lambda v: self.on_property_changed('fade_in', v))
-        self.fade_out_spin.valueChanged.connect(lambda v: self.on_property_changed('fade_out', v))
-        
-    def disconnect_color_signals(self):
-        """색상 시그널 연결 해제"""
-        self.brightness_slider.valueChanged.disconnect()
-        self.contrast_slider.valueChanged.disconnect()
-        self.saturation_slider.valueChanged.disconnect()
-        self.hue_slider.valueChanged.disconnect()
-        
-    def connect_color_signals(self):
-        """색상 시그널 연결"""
-        self.brightness_slider.valueChanged.connect(lambda v: self.on_property_changed('brightness', v/100.0))
-        self.contrast_slider.valueChanged.connect(lambda v: self.on_property_changed('contrast', v/100.0))
-        self.saturation_slider.valueChanged.connect(lambda v: self.on_property_changed('saturation', v/100.0))
-        self.hue_slider.valueChanged.connect(lambda v: self.on_property_changed('hue', v))
-        
-    def on_property_changed(self, property_name, value):
-        """속성 변경 이벤트"""
-        # 선택된 모든 클립에 적용
-        for clip in self.current_clips:
-            if hasattr(clip, property_name):
-                setattr(clip, property_name, value)
-                clip.properties_changed.emit()
-                
-        # 비율 유지 옵션 처리
-        if property_name in ['scale_x', 'scale_y'] and self.uniform_scale_check.isChecked():
-            if property_name == 'scale_x':
-                self.scale_y_spin.setValue(value)
-            else:
-                self.scale_x_spin.setValue(value)
-                
-        self.property_changed.emit(property_name, value)
-        
-    def remove_all_effects(self):
-        """모든 효과 제거"""
-        for clip in self.current_clips:
-            clip.clear_effects()
+            # 비디오 속성
+            self.speed_slider.setValue(int(getattr(clip, 'speed', 100)))
             
-        self.update_effects_group(self.current_clips[0] if self.current_clips else None) 
+            # 자막 속성
+            self.subtitle_enabled.setChecked(getattr(clip, 'subtitle_enabled', False))
+            self.subtitle_text.setText(getattr(clip, 'subtitle_text', ''))
+            
+            # 업데이트 레이블들
+            self.update_labels()
+            
+        finally:
+            # 각 위젯의 시그널 복원
+            for widget in widgets_to_block:
+                widget.blockSignals(old_blocked_states[widget])
+            
+        print(f"[속성패널] set_clip 완료: 길이 {clip.duration}")
+        
+    def clear_properties(self):
+        """속성 초기화"""
+        self.clip_name_edit.clear()
+        self.start_time_spin.setValue(0)
+        self.duration_spin.setValue(0)
+        
+        self.x_spin.setValue(0)
+        self.y_spin.setValue(0)
+        self.scale_slider.setValue(100)
+        self.rotation_spin.setValue(0)
+        self.opacity_slider.setValue(100)
+        
+        self.volume_slider.setValue(100)
+        self.mute_checkbox.setChecked(False)
+        
+        self.speed_slider.setValue(100)
+        self.flip_h_checkbox.setChecked(False)
+        self.flip_v_checkbox.setChecked(False)
+        
+        self.subtitle_enabled.setChecked(False)
+        self.subtitle_text.clear()
+        
+        self.update_labels()
+        
+    def update_labels(self):
+        """라벨 업데이트"""
+        self.scale_label.setText(f"{self.scale_slider.value()}%")
+        self.opacity_label.setText(f"{self.opacity_slider.value()}%")
+        self.volume_label.setText(f"{self.volume_slider.value()}%")
+        self.speed_label.setText(f"{self.speed_slider.value() / 100.0:.1f}x")
+        
+    def on_scale_changed(self, value):
+        """크기 변경"""
+        self.scale_label.setText(f"{value}%")
+        self.emit_property_change("scale", value)
+        
+    def on_opacity_changed(self, value):
+        """불투명도 변경"""
+        self.opacity_label.setText(f"{value}%")
+        self.emit_property_change("opacity", value)
+        
+    def on_volume_changed(self, value):
+        """볼륨 변경"""
+        self.volume_label.setText(f"{value}%")
+        self.emit_property_change("volume", value)
+        
+    def on_speed_changed(self, value):
+        """속도 변경"""
+        speed = value / 100.0
+        self.speed_label.setText(f"{speed:.1f}x")
+        self.emit_property_change("speed", speed)
+        
+    def choose_font_color(self):
+        """폰트 색상 선택"""
+        color = QColorDialog.getColor(self.font_color, self)
+        if color.isValid():
+            self.font_color = color
+            self.emit_property_change("font_color", color)
+            
+    def choose_chroma_color(self):
+        """크로마키 색상 선택"""
+        color = QColorDialog.getColor(self.chroma_color, self)
+        if color.isValid():
+            self.chroma_color = color
+            self.emit_property_change("chroma_color", color)
+            
+    def emit_property_change(self, property_name, value):
+        """속성 변경 시그널 방출"""
+        if self.current_clip:
+            self.property_changed.emit(property_name, value) 

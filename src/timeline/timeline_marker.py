@@ -285,6 +285,11 @@ class MarkerManager(QObject):
             print(f"마커 내보내기 오류: {e}")
             return ""
             
+    def clear_all_markers(self):
+        """모든 마커 제거"""
+        self.markers.clear()
+        self.markers_changed.emit()
+            
     def get_marker_statistics(self) -> Dict:
         """마커 통계"""
         stats = {

@@ -46,12 +46,12 @@ class TimelineWidget(QWidget):
         self.drag_original_start_frame = 0
         self.drag_original_track = 0
         
-        # 클립 크기 조정
+        # 클립 크기 조정 (비활성화됨)
         self.is_resizing = False
         self.resize_clip = None
         self.resize_edge = None  # 'left' 또는 'right'
         self.original_duration = 0
-        self.resize_threshold = 8  # 픽셀 단위
+        self.resize_threshold = 3  # 픽셀 단위 (매우 엄격하게) - 현재 비활성화
         
         # 관리자들
         self.command_manager = CommandManager()
@@ -91,10 +91,10 @@ class TimelineWidget(QWidget):
         
         self.init_ui()
         
-        # 30fps 타이머 (실시간 업데이트용)
+        # 15fps 타이머 (부드러운 업데이트)
         self.update_timer = QTimer()
         self.update_timer.timeout.connect(self.update)
-        self.update_timer.start(33)  # 약 30fps
+        self.update_timer.start(66)  # 약 15fps (성능 개선)
         
         # 크기 변경 이벤트
         self.resizeEvent = self.on_resize
@@ -464,11 +464,12 @@ class TimelineWidget(QWidget):
             clicked_clip = self.get_clip_at_position(event.position())
             
             if clicked_clip:
-                # 크기 조정 영역인지 확인
-                resize_edge = self.get_resize_edge(event.position(), clicked_clip)
+                # 크기 조정 영역인지 확인 (완전 비활성화)
+                resize_edge = None  # 크기 조정 기능 비활성화
                 
                 if resize_edge:
                     # 크기 조정 시작
+                    print(f"[크기조정 시작] 클립: {clicked_clip.name}, 가장자리: {resize_edge}, 원래 길이: {clicked_clip.duration}")
                     self.is_resizing = True
                     self.resize_clip = clicked_clip
                     self.resize_edge = resize_edge
@@ -481,8 +482,10 @@ class TimelineWidget(QWidget):
                         self.selected_clips.clear()
                         
                     if clicked_clip not in self.selected_clips:
+                        print(f"[클립 선택] {clicked_clip.name} - 길이: {clicked_clip.duration}")
                         self.selected_clips.append(clicked_clip)
                         
+                    print(f"[선택 변경 시그널] 클립 수: {len(self.selected_clips)}")
                     self.selection_changed.emit(self.selected_clips[:])
                     
                     # 드래그 시작
@@ -492,10 +495,8 @@ class TimelineWidget(QWidget):
                     self.drag_original_start_frame = clicked_clip.start_frame
                     self.drag_original_track = clicked_clip.track
                     
-                    # 클립 내부에서 클릭한 위치 계산 (오프셋)
-                    pixels_per_frame = self.zoom_level * 2
-                    clip_start_x = clicked_clip.start_frame * pixels_per_frame
-                    self.drag_offset_x = event.position().x() - clip_start_x
+                    # 단순화된 드래그 (오프셋 제거)
+                    print(f"[드래그 시작] 클립: {clicked_clip.name}, 시작 프레임: {clicked_clip.start_frame}")
             else:
                 # 빈 공간 클릭 - 선택 해제
                 self.selected_clips.clear()
@@ -533,49 +534,52 @@ class TimelineWidget(QWidget):
             if self.resize_edge == 'right':
                 # 오른쪽 가장자리 - 길이 조정
                 new_duration = max(30, self.original_duration + delta_frames)  # 최소 1초
+                old_duration = self.resize_clip.duration
                 self.resize_clip.duration = new_duration
+                if abs(new_duration - old_duration) > 10:
+                    print(f"[크기조정 우측] {old_duration} -> {new_duration} (델타: {delta_frames})")
             elif self.resize_edge == 'left':
                 # 왼쪽 가장자리 - 시작점과 길이 조정
                 new_start_frame = max(0, self.resize_clip.start_frame + delta_frames)
                 duration_change = self.resize_clip.start_frame - new_start_frame
                 new_duration = max(30, self.original_duration + duration_change)
                 
+                old_start = self.resize_clip.start_frame
+                old_duration = self.resize_clip.duration
                 self.resize_clip.start_frame = new_start_frame
                 self.resize_clip.duration = new_duration
+                if abs(new_duration - old_duration) > 10:
+                    print(f"[크기조정 좌측] 시작: {old_start} -> {new_start_frame}, 길이: {old_duration} -> {new_duration}")
             
         elif self.is_dragging and self.drag_clip:
-            # 클립 드래그
+            # 클립 드래그 - 단순화된 버전
             pixels_per_frame = self.zoom_level * 2
             
-            # 마우스 위치에서 오프셋을 뺀 실제 클립 시작 위치 계산
-            target_clip_x = event.position().x() - self.drag_offset_x
-            target_start_frame = max(0, int(target_clip_x / pixels_per_frame))
+            # 드래그 시작점에서의 이동 거리 계산
+            mouse_delta_x = event.position().x() - self.drag_start_pos.x()
+            frame_delta = int(mouse_delta_x / pixels_per_frame)
             
-            # 원래 위치를 기준으로 새로운 시작 프레임 계산
-            new_start_frame = target_start_frame
+            # 새로운 시작 프레임 = 원래 위치 + 이동 거리
+            target_start_frame = max(0, self.drag_original_start_frame + frame_delta)
             
-            # 스냅 적용
-            if self.snap_enabled:
-                new_start_frame = self.apply_snap(new_start_frame)
-            
-            # 새로운 트랙 계산 (드래그 시작 위치를 기준으로)
-            drag_start_track = int((self.drag_start_pos.y() - self.ruler_height) / self.tracks_height)
-            current_track = int((event.position().y() - self.ruler_height) / self.tracks_height)
-            track_delta = current_track - drag_start_track
+            # 트랙 변경 계산
+            mouse_delta_y = event.position().y() - self.drag_start_pos.y()
+            track_delta = int(mouse_delta_y / self.tracks_height)
             new_track = max(0, min(self.drag_original_track + track_delta, self.track_count - 1))
             
             # 클립 위치 업데이트
-            self.drag_clip.start_frame = new_start_frame
+            old_start_frame = self.drag_clip.start_frame
+            self.drag_clip.start_frame = target_start_frame
             self.drag_clip.track = new_track
             
-            self.clip_moved.emit(self.drag_clip, new_start_frame, new_track)
+            # 디버그 출력
+            if abs(target_start_frame - old_start_frame) > 5:
+                print(f"[단순 드래그] 클립: {self.drag_clip.name}, {old_start_frame} -> {target_start_frame} (델타: {frame_delta})")
+            
+            self.clip_moved.emit(self.drag_clip, target_start_frame, new_track)
         else:
-            # 마우스 커서 변경 (크기 조정 가능 영역에서)
-            clicked_clip = self.get_clip_at_position(event.position())
-            if clicked_clip and self.get_resize_edge(event.position(), clicked_clip):
-                self.setCursor(Qt.CursorShape.SizeHorCursor)
-            else:
-                self.setCursor(Qt.CursorShape.ArrowCursor)
+            # 마우스 커서 변경 (크기 조정 완전 비활성화)
+            self.setCursor(Qt.CursorShape.ArrowCursor)
             
         self.update()
         
@@ -785,11 +789,23 @@ class TimelineWidget(QWidget):
         x = (clip.start_frame * pixels_per_frame) - self.timeline_offset_x
         width = clip.duration * pixels_per_frame
         
-        # 왼쪽 가장자리
-        if abs(pos.x() - x) <= self.resize_threshold:
+        # 클립이 너무 작으면 크기 조정 비활성화
+        if width < 30:  # 30픽셀 미만
+            return None
+        
+        left_distance = abs(pos.x() - x)
+        right_distance = abs(pos.x() - (x + width))
+        
+        # 매우 엄격한 임계값 (1픽셀)
+        strict_threshold = 1
+        
+        # 왼쪽 가장자리 (정확히 가장자리에서만)
+        if left_distance <= strict_threshold and pos.x() <= x + 2:
+            print(f"[크기조정] 왼쪽 가장자리 감지, 거리: {left_distance:.1f}")
             return 'left'
-        # 오른쪽 가장자리  
-        elif abs(pos.x() - (x + width)) <= self.resize_threshold:
+        # 오른쪽 가장자리 (정확히 가장자리에서만)
+        elif right_distance <= strict_threshold and pos.x() >= x + width - 2:
+            print(f"[크기조정] 오른쪽 가장자리 감지, 거리: {right_distance:.1f}")
             return 'right'
         
         return None
@@ -1175,3 +1191,15 @@ class TimelineWidget(QWidget):
         # + 아이콘 그리기
         painter.drawLine(center_x - 10, center_y, center_x + 10, center_y)
         painter.drawLine(center_x, center_y - 10, center_x, center_y + 10)
+        
+    def get_selected_clips(self):
+        """선택된 클립들 반환"""
+        return self.selected_clips[:]
+        
+    def clear(self):
+        """타임라인 초기화"""
+        self.clips.clear()
+        self.selected_clips.clear()
+        self.playhead_position = 0
+        self.marker_manager.clear_all_markers()
+        self.update()
