@@ -91,11 +91,6 @@ class TimelineWidget(QWidget):
         
         self.init_ui()
         
-        # 15fps 타이머 (부드러운 업데이트)
-        self.update_timer = QTimer()
-        self.update_timer.timeout.connect(self.update)
-        self.update_timer.start(66)  # 약 15fps (성능 개선)
-        
         # 크기 변경 이벤트
         self.resizeEvent = self.on_resize
         
@@ -991,7 +986,7 @@ class TimelineWidget(QWidget):
         self.clips.clear()
         self.selected_clips.clear()
         self.playhead_position = 0
-        self.selection_changed.emit([])
+        self.marker_manager.clear_all_markers()
         self.update()
         
     def apply_snap(self, frame: int) -> int:
@@ -1194,7 +1189,11 @@ class TimelineWidget(QWidget):
         
     def get_selected_clips(self):
         """선택된 클립들 반환"""
-        return self.selected_clips[:]
+        return self.selected_clips.copy()
+        
+    def get_clips(self):
+        """모든 클립들 반환"""
+        return self.clips.copy()
         
     def clear(self):
         """타임라인 초기화"""

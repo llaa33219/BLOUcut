@@ -4,15 +4,17 @@ BLOUcut 프리뷰 위젯
 """
 
 import os
+import cv2
+import numpy as np
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton, 
                            QSlider, QLabel, QFrame, QButtonGroup, QSpinBox,
                            QCheckBox)
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QRect, QCoreApplication
-from PyQt6.QtGui import QPainter, QPixmap, QColor, QFont, QPen, QBrush
+from PyQt6.QtGui import QPainter, QPixmap, QColor, QFont, QPen, QBrush, QImage
 
 from ..core.media_analyzer import MediaAnalyzer
-from ..audio.audio_engine import AudioEngine
 from ..audio.pygame_audio_engine import PygameAudioEngine
+from ..core.compositor import compositor
 
 class PreviewWidget(QWidget):
     """프리뷰 위젯"""
@@ -58,7 +60,6 @@ class PreviewWidget(QWidget):
             print("Pygame 오디오 엔진 사용")
         except Exception as e:
             print(f"Pygame 오디오 엔진 실패, PyQt6 사용: {e}")
-            self.audio_engine = AudioEngine()
         
         # 시그널 연결
         self.audio_engine.position_changed.connect(self._on_audio_position_changed)
@@ -693,7 +694,7 @@ class PreviewWidget(QWidget):
             self._last_timeline_length = current_length
         
     def render_frame_at_position(self, frame_position):
-        """특정 프레임 위치의 이미지 렌더링 (순환 시그널 방지)"""
+        """특정 프레임 위치의 이미지 렌더링 (컴포지터 사용) - 멀티트랙 지원"""
         old_frame = self.current_frame
         self.current_frame = frame_position
         self.preview_mode = "timeline"
@@ -701,56 +702,75 @@ class PreviewWidget(QWidget):
         # 프리뷰 프레임에도 현재 위치 정보 전달
         self.preview_frame.timeline_frame_position = frame_position
         
-        # 해당 프레임에서 활성 클립 찾기
+        # 컴포지트를 사용하여 프레임 합성
         active_clips = []
         for clip in self.current_timeline_clips:
             if clip.start_frame <= frame_position < clip.start_frame + clip.duration:
                 active_clips.append(clip)
                 
         if active_clips:
-            # 가장 위쪽 트랙의 클립 사용 (간단한 구현)
-            active_clips.sort(key=lambda c: c.track)
-            top_clip = active_clips[0]
+            # 트랙별 클립 정보 출력 (디버깅용)
+            current_seconds = frame_position / 30.0
+            if not hasattr(self, '_last_log_second') or int(self._last_log_second) != int(current_seconds):
+                track_info = {}
+                for clip in active_clips:
+                    track_info[clip.track] = clip.name
+                print(f"[프리뷰 렌더링] 시간: {current_seconds:.1f}s, 활성 클립: {len(active_clips)}개")
+                print(f"  트랙별 클립: {track_info}")
+                self._last_log_second = current_seconds
             
-            # 클립 내 상대 프레임 계산
+            # 컴포지트로 프레임 합성 (모든 트랙 합성)
+            try:
+                composite_image = compositor.composite_frame(active_clips, frame_position)
+                
+                if composite_image is not None:
+                    # 합성된 이미지를 프리뷰 프레임에 설정
+                    self.preview_frame.set_composite_image(composite_image)
+                    
+                    # 컴포지트 이미지가 있으면 단일 클립 정보는 설정하지 않음
+                    # (다중 트랙 합성 결과이므로)
+                    print(f"[컴포지트] {len(active_clips)}개 트랙 합성 완료")
+                else:
+                    print(f"[컴포지트] 합성 실패, 대체 방법 사용")
+                    self._render_frame_fallback(frame_position, active_clips)
+                
+            except Exception as e:
+                print(f"프레임 합성 오류: {e}")
+                # 오류 발생시 기존 방식 사용
+                self._render_frame_fallback(frame_position, active_clips)
+        else:
+            # 활성 클립이 없으면 빈 화면
+            if not hasattr(self, '_last_empty_frame') or self._last_empty_frame != frame_position:
+                print(f"[프리뷰] 프레임 {frame_position}: 활성 클립 없음")
+                self._last_empty_frame = frame_position
+            self.preview_frame.clear_frame()
+            
+        # 시간 표시 및 프레임 업데이트 (항상 업데이트)
+        self.update_time_display()
+        self.preview_frame.update()  # 강제 업데이트
+        
+    def _render_frame_fallback(self, frame_position, active_clips):
+        """프레임 렌더링 실패시 대체 방법 - 가장 위쪽 트랙 우선"""
+        if active_clips:
+            # 가장 위쪽 트랙의 클립 표시 (트랙 번호가 높을수록 위)
+            active_clips.sort(key=lambda c: c.track, reverse=True)  # 내림차순 정렬
+            top_clip = active_clips[0]  # 가장 높은 트랙 번호
             relative_frame = frame_position - top_clip.start_frame
             
-            # 로그 출력 (프레임이 실제로 변경되었을 때만)
-            if old_frame != frame_position:
-                print(f"[프리뷰 렌더링] 프레임: {frame_position}, 클립: {top_clip.name}, 상대프레임: {relative_frame}")
+            print(f"[대체 렌더링] 트랙 {top_clip.track} 클립 '{top_clip.name}' 표시")
             
-            # 미디어 정보 설정 (프리뷰 프레임용) - 클립 변경시에만
-            if (top_clip.media_path != self.preview_frame.current_media_path or 
-                not self.preview_frame.current_media_info):
+            # 기존 방식으로 단일 클립 표시
+            if top_clip.media_path != self.preview_frame.current_media_path:
                 try:
                     media_info = MediaAnalyzer.get_media_info(top_clip.media_path)
                     self.preview_frame.set_media(top_clip.media_path, media_info)
-                    print(f"[미디어 변경] {os.path.basename(top_clip.media_path)}")
                 except Exception as e:
-                    print(f"미디어 정보 로드 실패: {top_clip.media_path} - {e}")
+                    print(f"대체 렌더링 - 미디어 정보 로드 실패: {e}")
                     
-            # 프리뷰 프레임 업데이트 - 확실한 업데이트
             self.preview_frame.set_current_frame(relative_frame)
             self.preview_frame.set_active_clip(top_clip)
         else:
-            # 활성 클립이 없으면 빈 화면
-            if old_frame != frame_position:
-                print(f"[프리뷰 렌더링] 프레임 {frame_position}: 활성 클립 없음")
             self.preview_frame.clear_frame()
-            
-        # 시간 표시 및 화면 업데이트
-        self.update_time_display()
-        
-        # 확실한 화면 업데이트 (중복이어도 상관없음)
-        self.preview_frame.force_update()
-        
-        # 위젯 자체도 업데이트
-        self.update()
-        
-        # 타임라인에서 호출된 경우 시그널 발생하지 않음 (순환 방지)
-        # 사용자가 직접 프리뷰에서 조작한 경우에만 시그널 발생
-        # if old_frame != frame_position:
-        #     self.frame_changed.emit(self.current_frame)
         
     def _on_audio_position_changed(self, position_ms):
         """오디오 위치 변경 이벤트 (동기화 개선)"""
@@ -847,28 +867,27 @@ class PreviewFrame(QFrame):
         self.active_clip = None  # 현재 활성 클립
         self.thumbnail_cache = {}
         
+        # 컴포지트 이미지 (새로 추가)
+        self.composite_image = None
+        
         # 타임라인 프레임 위치 (render_frame_at_position에서 설정)
         self.timeline_frame_position = 0
         
         # 강제 업데이트 플래그
-        self._force_update = False
+        self._force_updating = False
         
     def force_update(self):
-        """강제 프레임 업데이트 (더 확실한 방법)"""
-        # 캐시된 렌더링 상태는 유지 (로그 스팸 방지)
-        # if hasattr(self, '_last_rendered_frame'):
-        #     delattr(self, '_last_rendered_frame')
+        """강제 프레임 업데이트 (무한 루프 방지)"""
+        # 이미 강제 업데이트 중이면 중복 실행 방지
+        if hasattr(self, '_force_updating') and self._force_updating:
+            return
             
-        self._force_update = True
+        self._force_updating = True
         
-        # 여러 번의 업데이트 시도
+        # 단순한 업데이트만 수행
         self.update()
-        self.repaint()  # 즉시 다시 그리기
         
-        # Qt 이벤트 루프 강제 처리
-        QCoreApplication.processEvents()
-        
-        self._force_update = False
+        self._force_updating = False
         
     def set_current_frame(self, frame):
         """현재 프레임 설정 (개선된 로직)"""
@@ -883,14 +902,37 @@ class PreviewFrame(QFrame):
             else:
                 print(f"[PreviewFrame] 프레임 변경: {old_frame} -> {frame}")
                 
-            # 강제 화면 업데이트
+            # 강제 프레임 업데이트
             self.force_update()
         else:
             # 같은 프레임이어도 강제 업데이트가 필요한 경우가 있음
-            if hasattr(self, '_force_update') and self._force_update:
+            if hasattr(self, '_force_updating') and self._force_updating:
                 print(f"[PreviewFrame] 강제 업데이트: 프레임 {frame}")
                 self.update()
                 self.repaint()
+        
+    def set_composite_image(self, composite_image):
+        """합성된 이미지 설정 (OpenCV numpy 배열) - 무한 루프 방지"""
+        try:
+            if composite_image is not None:
+                # OpenCV 이미지를 직접 저장 (numpy 배열)
+                self.composite_image = composite_image.copy()  # 복사본 저장
+                print(f"[컴포지트 이미지] 설정됨: {composite_image.shape}")
+                
+                # 컴포지트 이미지가 설정되면 기존 미디어 프레임 캐시 무효화
+                if hasattr(self, '_frame_cache'):
+                    self._frame_cache.clear()
+                    
+            else:
+                self.composite_image = None
+                print(f"[컴포지트 이미지] 제거됨")
+                
+            # 화면 업데이트 (단순하게)
+            self.update()
+            
+        except Exception as e:
+            print(f"컴포지트 이미지 설정 오류: {e}")
+            self.composite_image = None
         
     def clear_frame(self):
         """프레임 지우기 (개선된 로직)"""
@@ -902,24 +944,23 @@ class PreviewFrame(QFrame):
         self.force_update()
         
     def draw_video_frame(self, painter, rect):
-        """비디오 프레임 그리기 (썸네일 기반) - 정확한 시간 우선"""
+        """비디오 프레임 그리기 (썸네일 기반) - 성능 최적화"""
         try:
-            # 현재 프레임 시간 계산 (더 정확한 계산)
+            # 현재 프레임 시간 계산
             if self.current_media_info and 'fps' in self.current_media_info:
                 current_time = self.current_frame / self.current_media_info['fps']
             else:
                 current_time = self.current_frame / 30.0  # 기본 30fps
                 
-            # 로그 스팸 방지 - 이전 프레임과 다를 때만 출력
-            if not hasattr(self, '_last_rendered_frame') or self._last_rendered_frame != self.current_frame:
-                print(f"[비디오 렌더링] 프레임: {self.current_frame}, 시간: {current_time:.2f}초, 파일: {os.path.basename(self.current_media_path) if self.current_media_path else 'None'}")
-                self._last_rendered_frame = self.current_frame
-                
             # 캐시 키 생성 (파일 경로 + 프레임 번호)
             cache_key = f"{self.current_media_path}_{self.current_frame}"
             
+            # 캐시 초기화
+            if not hasattr(self, '_frame_cache'):
+                self._frame_cache = {}
+                
             # 이미 렌더링된 프레임인지 확인
-            if hasattr(self, '_frame_cache') and cache_key in self._frame_cache:
+            if cache_key in self._frame_cache:
                 pixmap = self._frame_cache[cache_key]
                 if not pixmap.isNull():
                     scaled_pixmap = pixmap.scaled(
@@ -933,22 +974,18 @@ class PreviewFrame(QFrame):
                     self._draw_frame_overlay(painter, rect)
                     return
                     
-            # 캐시 초기화
-            if not hasattr(self, '_frame_cache'):
-                self._frame_cache = {}
-                
             # 캐시 크기 제한 (메모리 관리)
-            if len(self._frame_cache) > 20:
-                # 가장 오래된 항목 제거
-                oldest_key = next(iter(self._frame_cache))
-                del self._frame_cache[oldest_key]
-                
+            if len(self._frame_cache) > 50:  # 더 많이 캐시
+                # 가장 오래된 항목 제거 (FIFO)
+                oldest_keys = list(self._frame_cache.keys())[:20]
+                for key in oldest_keys:
+                    del self._frame_cache[key]
+                    
             # 정확한 현재 시간의 썸네일을 먼저 시도
             loaded_pixmap = None
             used_time = current_time
             
             # 1. 정확한 현재 시간 썸네일 시도
-            print(f"[썸네일 시도] 정확한 시간: {current_time:.1f}초")
             thumbnail_path = MediaAnalyzer.get_thumbnail_path(self.current_media_path, current_time)
             
             if thumbnail_path and os.path.exists(thumbnail_path):
@@ -956,41 +993,32 @@ class PreviewFrame(QFrame):
                 if not pixmap.isNull():
                     loaded_pixmap = pixmap
                     used_time = current_time
-                    print(f"[썸네일 로드] {os.path.basename(thumbnail_path)} (정확한 시간: {current_time:.1f}s)")
-                else:
-                    print(f"[썸네일 오류] 파일 로드 실패: {thumbnail_path}")
-            else:
-                print(f"[썸네일 없음] 시간 {current_time:.1f}초 썸네일 파일 없음")
-                
+                    
             # 2. 정확한 시간이 실패하면 근처 시간들 시도
             if not loaded_pixmap:
-                print(f"[썸네일 대체] 근처 시간대 시도")
-                thumbnail_times = []
-                
-                # 근처 시간들 (0.5초 간격)
-                for offset in [-1.0, -0.5, 0.5, 1.0]:
+                # 근처 시간들 (더 적은 범위로)
+                for offset in [-0.5, 0.5, -1.0, 1.0]:
                     nearby_time = current_time + offset
                     if nearby_time >= 0:
-                        thumbnail_times.append(nearby_time)
-                
-                # 기본 안전 시간들
-                thumbnail_times.extend([0.5, 1.0, 2.0, 0.0])
-                
-                # 중복 제거
-                thumbnail_times = list(set(thumbnail_times))
-                
-                for time_to_try in thumbnail_times:
-                    if time_to_try < 0:
-                        continue
+                        thumbnail_path = MediaAnalyzer.get_thumbnail_path(self.current_media_path, nearby_time)
                         
-                    thumbnail_path = MediaAnalyzer.get_thumbnail_path(self.current_media_path, time_to_try)
+                        if thumbnail_path and os.path.exists(thumbnail_path):
+                            pixmap = QPixmap(thumbnail_path)
+                            if not pixmap.isNull():
+                                loaded_pixmap = pixmap
+                                used_time = nearby_time
+                                break
+                                
+            # 3. 기본 시간들 시도 (더 제한적으로)
+            if not loaded_pixmap:
+                for safe_time in [0.5, 1.0, 0.0]:
+                    thumbnail_path = MediaAnalyzer.get_thumbnail_path(self.current_media_path, safe_time)
                     
                     if thumbnail_path and os.path.exists(thumbnail_path):
                         pixmap = QPixmap(thumbnail_path)
                         if not pixmap.isNull():
                             loaded_pixmap = pixmap
-                            used_time = time_to_try
-                            print(f"[썸네일 대체로드] {os.path.basename(thumbnail_path)} (시간: {time_to_try:.1f}s)")
+                            used_time = safe_time
                             break
                         
             if loaded_pixmap:
@@ -1007,20 +1035,19 @@ class PreviewFrame(QFrame):
                 y = rect.y() + (rect.height() - scaled_pixmap.height()) // 2
                 painter.drawPixmap(x, y, scaled_pixmap)
                 
-                # 대체 썸네일 표시 알림 (현재 시간과 다를 때만)
-                if abs(used_time - current_time) > 0.1:
-                    painter.setPen(QPen(QColor(255, 255, 0, 200)))
-                    font = QFont("Arial", 10)
+                # 대체 썸네일 표시 (차이가 클 때만)
+                if abs(used_time - current_time) > 0.5:
+                    painter.setPen(QPen(QColor(255, 255, 0, 150)))
+                    font = QFont("Arial", 9)
                     painter.setFont(font)
                     painter.drawText(rect.adjusted(10, 10, -10, -10), 
                                    Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignRight, 
-                                   f"썸네일({used_time:.1f}s)")
+                                   f"대체({used_time:.1f}s)")
                 
                 self._draw_frame_overlay(painter, rect)
                 return
                     
             # 모든 방법 실패시 플레이스홀더
-            print(f"[썸네일 완전실패] {os.path.basename(self.current_media_path)} 프레임 {self.current_frame}")
             self.draw_placeholder(painter, rect, f"비디오: {os.path.basename(self.current_media_path)}")
             
         except Exception as e:
@@ -1189,22 +1216,104 @@ class PreviewFrame(QFrame):
         painter.drawLine(rect.x(), third_y2, rect.x() + rect.width(), third_y2)
         
     def draw_media_frame(self, painter, rect):
-        """실제 미디어 프레임 그리기"""
-        if not self.current_media_info:
-            self.draw_dummy_video(painter, rect)
+        """미디어 프레임 그리기 (개선된 우선순위) - 무한 재귀 방지"""
+        # 1. 컴포지트 프레임이 있으면 우선 표시
+        if hasattr(self, 'composite_image') and self.composite_image is not None:
+            if self.draw_composite_frame(painter, rect):
+                return  # 성공적으로 그렸으면 종료
+        
+        # 2. 컴포지트 프레임이 없거나 실패하면 기존 방식 사용
+        if not self.current_media_path:
+            self.draw_placeholder(painter, rect, "미디어 없음")
             return
             
-        media_type = self.current_media_info['media_type']
-        
-        if media_type == 'image':
-            self.draw_image_frame(painter, rect)
-        elif media_type == 'video':
-            self.draw_video_frame(painter, rect)
-        elif media_type == 'audio':
-            self.draw_audio_frame(painter, rect)
-        else:
-            self.draw_dummy_video(painter, rect)
+        try:
+            # 미디어 타입 확인
+            if not self.current_media_info:
+                self.draw_placeholder(painter, rect, "미디어 정보 로딩 중...")
+                return
+                
+            media_type = self.current_media_info.get('media_type', 'unknown')
             
+            if media_type == 'video':
+                self.draw_video_frame(painter, rect)
+            elif media_type == 'image':
+                self.draw_image_frame(painter, rect)
+            elif media_type == 'audio':
+                self.draw_audio_frame(painter, rect)
+            else:
+                self.draw_placeholder(painter, rect, f"지원하지 않는 형식: {media_type}")
+                
+        except Exception as e:
+            print(f"미디어 프레임 그리기 오류: {e}")
+            self.draw_placeholder(painter, rect, "미디어 렌더링 오류")
+            
+    def draw_composite_frame(self, painter, rect):
+        """합성된 프레임 그리기 (컴포지터 결과) - 화면 표시 확인"""
+        if self.composite_image is not None:
+            try:
+                # OpenCV 이미지를 QPixmap으로 변환
+                if len(self.composite_image.shape) == 3:
+                    # BGR to RGB 변환
+                    rgb_image = cv2.cvtColor(self.composite_image, cv2.COLOR_BGR2RGB)
+                    height, width, channel = rgb_image.shape
+                    bytes_per_line = 3 * width
+                    
+                    # 데이터 타입을 uint8로 확실히 변환
+                    if rgb_image.dtype != np.uint8:
+                        rgb_image = rgb_image.astype(np.uint8)
+                    
+                    # 연속적인 메모리 배열로 변환
+                    rgb_image = np.ascontiguousarray(rgb_image)
+                    
+                    # QImage 생성
+                    q_image = QImage(rgb_image.data, width, height, bytes_per_line, QImage.Format.Format_RGB888)
+                    
+                    if q_image.isNull():
+                        print("[ERROR] QImage 생성 실패")
+                        return False
+                    
+                elif len(self.composite_image.shape) == 2:
+                    # 그레이스케일
+                    height, width = self.composite_image.shape
+                    bytes_per_line = width
+                    
+                    if self.composite_image.dtype != np.uint8:
+                        gray_image = self.composite_image.astype(np.uint8)
+                    else:
+                        gray_image = self.composite_image
+                        
+                    gray_image = np.ascontiguousarray(gray_image)
+                    q_image = QImage(gray_image.data, width, height, bytes_per_line, QImage.Format.Format_Grayscale8)
+                else:
+                    print(f"[ERROR] 지원되지 않는 이미지 형태: {self.composite_image.shape}")
+                    return False
+                
+                # QPixmap으로 변환
+                pixmap = QPixmap.fromImage(q_image)
+                if pixmap.isNull():
+                    print("[ERROR] QPixmap 변환 실패")
+                    return False
+                
+                # 프리뷰 크기에 맞게 스케일링
+                scaled_pixmap = pixmap.scaled(rect.size(), Qt.AspectRatioMode.KeepAspectRatio, 
+                                            Qt.TransformationMode.SmoothTransformation)
+                
+                # 중앙에 그리기
+                x = rect.x() + (rect.width() - scaled_pixmap.width()) // 2
+                y = rect.y() + (rect.height() - scaled_pixmap.height()) // 2
+                
+                painter.drawPixmap(x, y, scaled_pixmap)
+                print(f"[SUCCESS] 컴포지트 프레임 그리기 완료: {scaled_pixmap.width()}x{scaled_pixmap.height()}")
+                return True
+                
+            except Exception as e:
+                print(f"[ERROR] 컴포지트 프레임 그리기 오류: {e}")
+                return False
+        else:
+            print("[DEBUG] 컴포지트 이미지가 None")
+            return False
+        
     def draw_image_frame(self, painter, rect):
         """이미지 프레임 그리기"""
         try:

@@ -9,17 +9,21 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                            QComboBox, QPushButton, QGroupBox, QLineEdit,
                            QColorDialog, QFileDialog, QScrollArea, QFrame)
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QPalette
+from PyQt6.QtGui import QColor, QPalette, QIcon
 
 class PropertiesPanel(QWidget):
     """속성 패널"""
     
     # 시그널
     property_changed = pyqtSignal(str, object)  # 속성명, 값
+    keyframe_added = pyqtSignal(str, int, object)  # 속성명, 프레임, 값
+    keyframe_removed = pyqtSignal(str, int)  # 속성명, 프레임
     
     def __init__(self):
         super().__init__()
         self.current_clip = None
+        self.current_frame = 0  # 현재 타임라인 프레임
+        self.keyframe_buttons = {}  # 키프레임 버튼들 저장
         self.init_ui()
         
     def init_ui(self):
@@ -27,6 +31,15 @@ class PropertiesPanel(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(5, 5, 5, 5)
         layout.setSpacing(5)
+        
+        # 현재 프레임 표시
+        frame_layout = QHBoxLayout()
+        frame_layout.addWidget(QLabel("현재 프레임:"))
+        self.current_frame_label = QLabel("0")
+        self.current_frame_label.setStyleSheet("font-weight: bold; color: #4CAF50;")
+        frame_layout.addWidget(self.current_frame_label)
+        frame_layout.addStretch()
+        layout.addLayout(frame_layout)
         
         # 스크롤 영역
         scroll_area = QScrollArea()
@@ -112,6 +125,11 @@ class PropertiesPanel(QWidget):
         self.x_spin.setRange(-9999, 9999)
         self.x_spin.valueChanged.connect(lambda val: self.emit_property_change("x", val))
         x_layout.addWidget(self.x_spin)
+        
+        # 키프레임 버튼
+        keyframe_btn_x = self.create_keyframe_button('position_x')
+        x_layout.addWidget(keyframe_btn_x)
+        
         layout.addLayout(x_layout)
         
         # 위치 Y
@@ -121,6 +139,11 @@ class PropertiesPanel(QWidget):
         self.y_spin.setRange(-9999, 9999)
         self.y_spin.valueChanged.connect(lambda val: self.emit_property_change("y", val))
         y_layout.addWidget(self.y_spin)
+        
+        # 키프레임 버튼
+        keyframe_btn_y = self.create_keyframe_button('position_y')
+        y_layout.addWidget(keyframe_btn_y)
+        
         layout.addLayout(y_layout)
         
         # 크기 조절
@@ -134,6 +157,11 @@ class PropertiesPanel(QWidget):
         
         self.scale_label = QLabel("100%")
         scale_layout.addWidget(self.scale_label)
+        
+        # 스케일 키프레임 버튼들
+        keyframe_btn_scale = self.create_keyframe_button('scale_x')  # 스케일은 X,Y 동시 제어
+        scale_layout.addWidget(keyframe_btn_scale)
+        
         layout.addLayout(scale_layout)
         
         # 회전
@@ -144,6 +172,11 @@ class PropertiesPanel(QWidget):
         self.rotation_spin.setSuffix("°")
         self.rotation_spin.valueChanged.connect(lambda val: self.emit_property_change("rotation", val))
         rotation_layout.addWidget(self.rotation_spin)
+        
+        # 키프레임 버튼
+        keyframe_btn_rotation = self.create_keyframe_button('rotation')
+        rotation_layout.addWidget(keyframe_btn_rotation)
+        
         layout.addLayout(rotation_layout)
         
         # 불투명도
@@ -157,6 +190,11 @@ class PropertiesPanel(QWidget):
         
         self.opacity_label = QLabel("100%")
         opacity_layout.addWidget(self.opacity_label)
+        
+        # 키프레임 버튼
+        keyframe_btn_opacity = self.create_keyframe_button('opacity')
+        opacity_layout.addWidget(keyframe_btn_opacity)
+        
         layout.addLayout(opacity_layout)
         
         return group
@@ -360,6 +398,135 @@ class PropertiesPanel(QWidget):
         layout.addLayout(filter_layout)
         
         return group
+        
+    def create_keyframes_group(self):
+        """키프레임 관리 그룹"""
+        group = QGroupBox("키프레임")
+        layout = QVBoxLayout(group)
+        
+        # 키프레임 버튼들
+        self.keyframe_buttons = {}
+        self.keyframe_buttons['position_x'] = self.create_keyframe_button('position_x')
+        self.keyframe_buttons['position_y'] = self.create_keyframe_button('position_y')
+        self.keyframe_buttons['scale_x'] = self.create_keyframe_button('scale_x')
+        self.keyframe_buttons['scale_y'] = self.create_keyframe_button('scale_y')
+        self.keyframe_buttons['rotation'] = self.create_keyframe_button('rotation')
+        self.keyframe_buttons['opacity'] = self.create_keyframe_button('opacity')
+        self.keyframe_buttons['volume'] = self.create_keyframe_button('volume')
+        
+        for property_name, button in self.keyframe_buttons.items():
+            layout.addWidget(button)
+        
+        return group
+        
+    def create_keyframe_button(self, property_name):
+        """키프레임 버튼 생성"""
+        button = QPushButton()
+        button.setFixedSize(20, 20)
+        button.setCheckable(True)
+        button.setToolTip(f"{property_name} 키프레임")
+        
+        # 초기 상태는 키프레임 없음
+        self.update_keyframe_button(button, property_name, False)
+        
+        # 클릭 이벤트
+        button.clicked.connect(lambda: self.toggle_keyframe(property_name))
+        
+        self.keyframe_buttons[property_name] = button
+        return button
+        
+    def update_keyframe_button(self, button, property_name, has_keyframe):
+        """키프레임 버튼 상태 업데이트"""
+        if has_keyframe:
+            button.setText("◆")  # 다이아몬드 (키프레임 있음)
+            button.setStyleSheet("""
+                QPushButton {
+                    background-color: #FFA500;
+                    color: white;
+                    border: 1px solid #FF8C00;
+                    border-radius: 10px;
+                    font-weight: bold;
+                    font-size: 10px;
+                }
+                QPushButton:hover {
+                    background-color: #FF8C00;
+                }
+            """)
+        else:
+            button.setText("◇")  # 빈 다이아몬드 (키프레임 없음)
+            button.setStyleSheet("""
+                QPushButton {
+                    background-color: #555;
+                    color: #CCC;
+                    border: 1px solid #777;
+                    border-radius: 10px;
+                    font-size: 10px;
+                }
+                QPushButton:hover {
+                    background-color: #666;
+                }
+            """)
+            
+    def toggle_keyframe(self, property_name):
+        """키프레임 토글"""
+        if not self.current_clip:
+            return
+            
+        # 현재 프레임에서의 키프레임 존재 여부 확인
+        has_keyframe = self.current_clip.keyframes.has_keyframes_at_frame(self.current_frame)
+        properties_at_frame = self.current_clip.keyframes.get_properties_with_keyframes_at_frame(self.current_frame)
+        
+        if property_name in properties_at_frame:
+            # 키프레임 제거
+            self.current_clip.remove_keyframe(property_name, self.current_frame)
+            self.keyframe_removed.emit(property_name, self.current_frame)
+            print(f"[키프레임 제거] {property_name} @ 프레임 {self.current_frame}")
+        else:
+            # 키프레임 추가 - 현재 속성 값 사용
+            current_value = self.get_current_property_value(property_name)
+            if current_value is not None:
+                from ..core.keyframe import InterpolationType
+                self.current_clip.add_keyframe(property_name, self.current_frame, current_value, InterpolationType.LINEAR)
+                self.keyframe_added.emit(property_name, self.current_frame, current_value)
+                print(f"[키프레임 추가] {property_name} @ 프레임 {self.current_frame}: {current_value}")
+                
+        # 버튼 상태 업데이트
+        self.update_keyframe_buttons()
+        
+    def get_current_property_value(self, property_name):
+        """현재 속성 값 가져오기"""
+        if not self.current_clip:
+            return None
+            
+        # 속성 매핑
+        property_mapping = {
+            'position_x': lambda: self.x_spin.value(),
+            'position_y': lambda: self.y_spin.value(),
+            'scale_x': lambda: self.scale_slider.value() / 100.0,
+            'scale_y': lambda: self.scale_slider.value() / 100.0,
+            'rotation': lambda: self.rotation_spin.value(),
+            'opacity': lambda: self.opacity_slider.value() / 100.0,
+            'volume': lambda: self.volume_slider.value() / 100.0,
+        }
+        
+        if property_name in property_mapping:
+            try:
+                return property_mapping[property_name]()
+            except:
+                return None
+        else:
+            # 직접 클립 속성에서 가져오기
+            return getattr(self.current_clip, property_name, None)
+            
+    def update_keyframe_buttons(self):
+        """모든 키프레임 버튼 상태 업데이트"""
+        if not self.current_clip:
+            return
+            
+        for property_name, button in self.keyframe_buttons.items():
+            properties_at_frame = self.current_clip.keyframes.get_properties_with_keyframes_at_frame(self.current_frame)
+            has_keyframe = property_name in properties_at_frame
+            self.update_keyframe_button(button, property_name, has_keyframe)
         
     def apply_styles(self):
         """스타일 적용"""
@@ -571,4 +738,85 @@ class PropertiesPanel(QWidget):
     def emit_property_change(self, property_name, value):
         """속성 변경 시그널 방출"""
         if self.current_clip:
-            self.property_changed.emit(property_name, value) 
+            self.property_changed.emit(property_name, value)
+        
+    def set_current_frame(self, frame):
+        """현재 프레임 설정"""
+        self.current_frame = frame
+        self.current_frame_label.setText(str(frame))
+        
+        # 키프레임 버튼 상태 업데이트
+        self.update_keyframe_buttons()
+        
+        # 키프레임이 있는 속성들의 값 업데이트
+        if self.current_clip:
+            self.update_animated_values()
+            
+    def update_animated_values(self):
+        """키프레임이 있는 속성들의 값을 현재 프레임에 맞게 업데이트"""
+        if not self.current_clip:
+            return
+            
+        # 애니메이션된 속성들 가져오기
+        animated_properties = self.current_clip.keyframes.get_animated_properties()
+        
+        for property_name in animated_properties:
+            # 현재 프레임에서의 값 계산
+            animated_value = self.current_clip.get_animated_value(property_name, self.current_frame)
+            
+            if animated_value is not None:
+                # UI 컨트롤 업데이트 (시그널 차단하여 무한 루프 방지)
+                self.update_ui_control(property_name, animated_value, block_signals=True)
+                
+    def update_ui_control(self, property_name, value, block_signals=False):
+        """UI 컨트롤 값 업데이트"""
+        if property_name == 'position_x':
+            if hasattr(self, 'x_spin'):
+                if block_signals:
+                    self.x_spin.blockSignals(True)
+                self.x_spin.setValue(int(value))
+                if block_signals:
+                    self.x_spin.blockSignals(False)
+                    
+        elif property_name == 'position_y':
+            if hasattr(self, 'y_spin'):
+                if block_signals:
+                    self.y_spin.blockSignals(True)
+                self.y_spin.setValue(int(value))
+                if block_signals:
+                    self.y_spin.blockSignals(False)
+                    
+        elif property_name in ['scale_x', 'scale_y']:
+            if hasattr(self, 'scale_slider'):
+                if block_signals:
+                    self.scale_slider.blockSignals(True)
+                self.scale_slider.setValue(int(value * 100))
+                self.scale_label.setText(f"{int(value * 100)}%")
+                if block_signals:
+                    self.scale_slider.blockSignals(False)
+                    
+        elif property_name == 'rotation':
+            if hasattr(self, 'rotation_spin'):
+                if block_signals:
+                    self.rotation_spin.blockSignals(True)
+                self.rotation_spin.setValue(int(value))
+                if block_signals:
+                    self.rotation_spin.blockSignals(False)
+                    
+        elif property_name == 'opacity':
+            if hasattr(self, 'opacity_slider'):
+                if block_signals:
+                    self.opacity_slider.blockSignals(True)
+                self.opacity_slider.setValue(int(value * 100))
+                self.opacity_label.setText(f"{int(value * 100)}%")
+                if block_signals:
+                    self.opacity_slider.blockSignals(False)
+                    
+        elif property_name == 'volume':
+            if hasattr(self, 'volume_slider'):
+                if block_signals:
+                    self.volume_slider.blockSignals(True)
+                self.volume_slider.setValue(int(value * 100))
+                self.volume_label.setText(f"{int(value * 100)}%")
+                if block_signals:
+                    self.volume_slider.blockSignals(False) 

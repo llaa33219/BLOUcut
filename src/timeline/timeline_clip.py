@@ -40,7 +40,7 @@ class TimelineClip(QObject):
         self.scale_x = 1.0     # X 스케일
         self.scale_y = 1.0     # Y 스케일
         self.rotation = 0.0    # 회전각 (도)
-        self.opacity = 1.0     # 불투명도 (0.0 ~ 1.0)
+        self.opacity = 100.0   # 불투명도 (0.0 ~ 100.0) - Transform과 일치
         
         # 오디오 속성
         self.volume = 1.0      # 볼륨 (0.0 ~ 2.0)
@@ -55,6 +55,10 @@ class TimelineClip(QObject):
         
         # 효과 리스트
         self.effects = []
+        
+        # 키프레임 시스템
+        from ..core.keyframe import KeyframeManager
+        self.keyframes = KeyframeManager()
         
         # 선택 상태
         self.is_selected = False
@@ -105,7 +109,7 @@ class TimelineClip(QObject):
         
     def set_opacity(self, opacity):
         """불투명도 설정"""
-        self.opacity = max(0.0, min(1.0, opacity))
+        self.opacity = max(0.0, min(100.0, opacity))
         self.properties_changed.emit()
         
     def set_volume(self, volume):
@@ -139,17 +143,151 @@ class TimelineClip(QObject):
         """효과 추가"""
         self.effects.append(effect)
         self.properties_changed.emit()
+        print(f"[클립 효과] {self.name}에 {effect.name} 효과 추가")
         
     def remove_effect(self, effect):
         """효과 제거"""
         if effect in self.effects:
             self.effects.remove(effect)
             self.properties_changed.emit()
+            print(f"[클립 효과] {self.name}에서 {effect.name} 효과 제거")
             
     def clear_effects(self):
         """모든 효과 제거"""
         self.effects.clear()
         self.properties_changed.emit()
+        print(f"[클립 효과] {self.name}의 모든 효과 제거")
+    
+    # === 키프레임 관련 메서드 ===
+    
+    def add_keyframe(self, property_name, frame, value, interpolation_type=None):
+        """키프레임 추가"""
+        from ..core.keyframe import InterpolationType
+        if interpolation_type is None:
+            interpolation_type = InterpolationType.LINEAR
+            
+        self.keyframes.add_keyframe(property_name, frame, value, interpolation_type)
+        self.properties_changed.emit()
+        print(f"[키프레임] {self.name}: {property_name} 프레임 {frame}에 값 {value} 추가")
+        
+    def remove_keyframe(self, property_name, frame):
+        """키프레임 제거"""
+        self.keyframes.remove_keyframe(property_name, frame)
+        self.properties_changed.emit()
+        print(f"[키프레임] {self.name}: {property_name} 프레임 {frame} 키프레임 제거")
+        
+    def get_animated_value(self, property_name, frame):
+        """애니메이션된 값 가져오기 (키프레임 또는 기본값)"""
+        keyframe_value = self.keyframes.get_value_at_frame(property_name, frame)
+        if keyframe_value is not None:
+            return keyframe_value
+            
+        # 키프레임이 없으면 기본값 반환
+        return getattr(self, property_name, None)
+        
+    def has_keyframes(self):
+        """키프레임이 있는지 확인"""
+        return len(self.keyframes.get_animated_properties()) > 0
+        
+    def get_keyframe_frames(self):
+        """모든 키프레임 프레임들 반환"""
+        return self.keyframes.get_all_keyframe_frames()
+    
+    # === 효과 관련 메서드 ===
+    
+    def add_color_correction_effect(self, brightness=0, contrast=0, saturation=0, hue=0, gamma=1.0):
+        """색상 보정 효과 추가"""
+        from ..effects.effect_engine import ColorCorrectionEffect
+        effect = ColorCorrectionEffect()
+        effect.set_parameter('brightness', brightness)
+        effect.set_parameter('contrast', contrast)
+        effect.set_parameter('saturation', saturation)
+        effect.set_parameter('hue', hue)
+        effect.set_parameter('gamma', gamma)
+        self.add_effect(effect)
+        return effect
+        
+    def add_blur_effect(self, radius=5, blur_type='gaussian'):
+        """블러 효과 추가"""
+        from ..effects.effect_engine import BlurEffect
+        effect = BlurEffect()
+        effect.set_parameter('radius', radius)
+        effect.set_parameter('type', blur_type)
+        self.add_effect(effect)
+        return effect
+        
+    def add_sharpen_effect(self, amount=50):
+        """샤펜 효과 추가"""
+        from ..effects.effect_engine import SharpenEffect
+        effect = SharpenEffect()
+        effect.set_parameter('amount', amount)
+        self.add_effect(effect)
+        return effect
+        
+    def add_noise_effect(self, amount=10, noise_type='gaussian'):
+        """노이즈 효과 추가"""
+        from ..effects.effect_engine import NoiseEffect
+        effect = NoiseEffect()
+        effect.set_parameter('amount', amount)
+        effect.set_parameter('type', noise_type)
+        self.add_effect(effect)
+        return effect
+        
+    def add_vignette_effect(self, amount=50, size=50):
+        """비네트 효과 추가"""
+        from ..effects.effect_engine import VignetteEffect
+        effect = VignetteEffect()
+        effect.set_parameter('amount', amount)
+        effect.set_parameter('size', size)
+        self.add_effect(effect)
+        return effect
+    
+    # === 애니메이션 헬퍼 메서드 ===
+    
+    def animate_position(self, start_frame, end_frame, start_pos, end_pos, interpolation_type=None):
+        """위치 애니메이션"""
+        from ..core.keyframe import InterpolationType
+        if interpolation_type is None:
+            interpolation_type = InterpolationType.LINEAR
+            
+        self.add_keyframe('position_x', start_frame, start_pos[0], interpolation_type)
+        self.add_keyframe('position_x', end_frame, end_pos[0], interpolation_type)
+        self.add_keyframe('position_y', start_frame, start_pos[1], interpolation_type)
+        self.add_keyframe('position_y', end_frame, end_pos[1], interpolation_type)
+        
+    def animate_scale(self, start_frame, end_frame, start_scale, end_scale, interpolation_type=None):
+        """스케일 애니메이션"""
+        from ..core.keyframe import InterpolationType
+        if interpolation_type is None:
+            interpolation_type = InterpolationType.LINEAR
+            
+        if isinstance(start_scale, (int, float)):
+            start_scale = (start_scale, start_scale)
+        if isinstance(end_scale, (int, float)):
+            end_scale = (end_scale, end_scale)
+            
+        self.add_keyframe('scale_x', start_frame, start_scale[0], interpolation_type)
+        self.add_keyframe('scale_x', end_frame, end_scale[0], interpolation_type)
+        self.add_keyframe('scale_y', start_frame, start_scale[1], interpolation_type)
+        self.add_keyframe('scale_y', end_frame, end_scale[1], interpolation_type)
+        
+    def animate_rotation(self, start_frame, end_frame, start_angle, end_angle, interpolation_type=None):
+        """회전 애니메이션"""
+        from ..core.keyframe import InterpolationType
+        if interpolation_type is None:
+            interpolation_type = InterpolationType.LINEAR
+            
+        self.add_keyframe('rotation', start_frame, start_angle, interpolation_type)
+        self.add_keyframe('rotation', end_frame, end_angle, interpolation_type)
+        
+    def animate_opacity(self, start_frame, end_frame, start_opacity, end_opacity, interpolation_type=None):
+        """불투명도 애니메이션"""
+        from ..core.keyframe import InterpolationType
+        if interpolation_type is None:
+            interpolation_type = InterpolationType.LINEAR
+            
+        self.add_keyframe('opacity', start_frame, start_opacity, interpolation_type)
+        self.add_keyframe('opacity', end_frame, end_opacity, interpolation_type)
         
     def duplicate(self):
         """클립 복제"""
@@ -264,7 +402,7 @@ class TimelineClip(QObject):
         clip.scale_x = data.get('scale_x', 1.0)
         clip.scale_y = data.get('scale_y', 1.0)
         clip.rotation = data.get('rotation', 0.0)
-        clip.opacity = data.get('opacity', 1.0)
+        clip.opacity = data.get('opacity', 100.0)
         clip.volume = data.get('volume', 1.0)
         clip.fade_in = data.get('fade_in', 0)
         clip.fade_out = data.get('fade_out', 0)

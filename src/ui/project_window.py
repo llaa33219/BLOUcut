@@ -481,6 +481,9 @@ class ProjectWindow(QMainWindow):
         self.timeline_widget.playhead_changed.connect(self.update_preview)
         self.preview_widget.frame_changed.connect(self.timeline_widget.set_playhead_position)
         
+        # 프리뷰 프레임 변경시 속성 패널의 현재 프레임도 업데이트
+        self.preview_widget.frame_changed.connect(self.properties_panel.set_current_frame)
+        
         # 미디어 패널과 타임라인 연결
         self.media_panel.media_dropped.connect(self.timeline_widget.add_clip)
         self.media_panel.media_selected.connect(self.preview_single_media)
@@ -491,6 +494,10 @@ class ProjectWindow(QMainWindow):
         
         # 속성 패널 변경사항을 클립에 적용
         self.properties_panel.property_changed.connect(self.on_property_changed)
+        
+        # 키프레임 관련 시그널 연결
+        self.properties_panel.keyframe_added.connect(self.on_keyframe_added)
+        self.properties_panel.keyframe_removed.connect(self.on_keyframe_removed)
         
         # 효과 패널 연결
         self.effects_panel.effect_applied.connect(self.on_effect_applied)
@@ -961,26 +968,29 @@ class ProjectWindow(QMainWindow):
             self._last_time_str = time_str
         
     def update_preview(self, frame_position):
-        """프리뷰 화면 업데이트 (개선된 루프 방지 로직)"""
-        # 무한 루프 방지를 위한 플래그 확인 (하지만 합법적인 업데이트는 허용)
-        if (hasattr(self, '_updating_preview') and self._updating_preview):
-            return
-            
-        self._updating_preview = True
+        """프리뷰 업데이트 (컴포지터 사용) - 검정화면 문제 해결"""
+        # 타임라인의 클립들 가져오기
+        clips = self.timeline_widget.get_clips()
         
-        try:
-            # 타임라인 클립들을 프리뷰에 전달
-            self.preview_widget.set_timeline_clips(self.timeline_widget.clips)
-            # 해당 프레임 위치 렌더링
+        if clips:
+            # 타임라인 모드로 프리뷰 설정
+            self.preview_widget.set_timeline_clips(clips)
+            
+            # 컴포지터를 사용하여 프레임 렌더링 (항상 실행)
             self.preview_widget.render_frame_at_position(frame_position)
             
-            # 시간 표시 업데이트
-            self.update_time_display(frame_position)
+            # 로그 스팸 방지 - 초 단위로만 출력
+            current_seconds = frame_position / 30.0
+            if not hasattr(self, '_last_preview_log_second') or int(self._last_preview_log_second) != int(current_seconds):
+                print(f"[프리뷰] 시간: {current_seconds:.1f}s, 클립: {len(clips)}개")
+                self._last_preview_log_second = current_seconds
+        else:
+            # 클립이 없으면 빈 프리뷰
+            self.preview_widget.set_timeline_clips([])
+            self.preview_widget.render_frame_at_position(frame_position)
             
-            print(f"[프리뷰 업데이트] 프레임: {frame_position}")
-            
-        finally:
-            self._updating_preview = False
+        # 시간 표시 업데이트
+        self.update_time_display(frame_position)
         
     def preview_single_media(self, media_path):
         """단일 미디어 파일 미리보기 (미디어 패널에서 선택시)"""
@@ -997,13 +1007,23 @@ class ProjectWindow(QMainWindow):
             print(f"미디어 미리보기 실패: {e}")
             
     def on_timeline_changed(self, clip, start_frame, track):
-        """타임라인 변경 시 프리뷰 업데이트 (로그 최적화)"""
-        # 현재 재생 헤드 위치의 프리뷰 업데이트
+        """타임라인 변경 시 프리뷰 업데이트 (무한 루프 방지)"""
+        # 변경 내용이 실제로 의미있는지 확인
         current_frame = self.timeline_widget.playhead_position
-        self.update_preview(current_frame)
         
-        # 로그는 중요한 변경사항만 출력
+        # 연속적인 같은 클립 이동은 무시 (드래그 중)
+        if (hasattr(self, '_last_timeline_change') and 
+            self._last_timeline_change == (clip.name, start_frame, track)):
+            return
+            
+        # 프리뷰 업데이트 (제한적으로)
+        if abs(start_frame - getattr(self, '_last_update_frame', -999)) > 5:  # 5프레임 이상 차이날 때만
+            self.update_preview(current_frame)
+            self._last_update_frame = start_frame
+        
+        # 로그는 의미있는 변경사항만 출력
         print(f"[타임라인 변경] 클립: {clip.name}, 프레임: {start_frame}, 트랙: {track}")
+        self._last_timeline_change = (clip.name, start_frame, track)
         
     def on_clip_selection_changed(self, selected_clips):
         """클립 선택 변경 이벤트 (로그 최적화)"""
@@ -1078,28 +1098,50 @@ class ProjectWindow(QMainWindow):
             print(f"속성 적용 오류: {e}")
             
     def on_effect_applied(self, effect_name, effect_data):
-        """효과 적용 이벤트"""
-        selected_clips = self.timeline_widget.get_selected_clips()
-        if not selected_clips:
-            from PyQt6.QtWidgets import QMessageBox
-            QMessageBox.warning(self, "효과 적용", "효과를 적용할 클립을 선택해주세요.")
-            return
-            
-        for clip in selected_clips:
-            # 효과 데이터를 클립에 추가
-            effect = {
-                'name': effect_name,
-                'type': effect_data.get('type', 'unknown'),
-                'parameters': effect_data.get('parameters', {})
-            }
-            
-            if not hasattr(clip, 'effects'):
-                clip.effects = []
-                
-            clip.effects.append(effect)
-            
-        # 타임라인 업데이트
-        self.timeline_widget.update()
+        """효과 적용됨"""
+        print(f"효과 적용: {effect_name}")
         
-        # 프리뷰 업데이트  
-        self.update_preview(self.timeline_widget.playhead_position) 
+        # 선택된 클립에 효과 적용
+        selected_clips = self.timeline_widget.get_selected_clips()
+        if selected_clips:
+            for clip in selected_clips:
+                try:
+                    # 효과 엔진에서 효과 생성
+                    from ..effects.effect_engine import effect_engine
+                    effect = effect_engine.create_effect(effect_name)
+                    
+                    if effect:
+                        # 효과 파라미터 설정
+                        for key, value in effect_data.items():
+                            effect.set_parameter(key, value)
+                            
+                        # 클립에 효과 추가
+                        clip.add_effect(effect)
+                        
+                        print(f"클립 '{clip.name}'에 {effect_name} 효과 적용")
+                        
+                        # 프리뷰 업데이트
+                        current_frame = self.timeline_widget.playhead_position
+                        self.update_preview(current_frame)
+                        
+                except Exception as e:
+                    print(f"효과 적용 오류: {e}")
+                    QMessageBox.warning(self, "효과 적용 실패", f"효과를 적용하는 중 오류가 발생했습니다:\n{str(e)}")
+        else:
+            QMessageBox.information(self, "알림", "효과를 적용할 클립을 선택해주세요.")
+            
+    def on_keyframe_added(self, property_name, frame, value):
+        """키프레임 추가됨"""
+        print(f"[키프레임 추가] {property_name} @ 프레임 {frame}: {value}")
+        
+        # 프리뷰 업데이트 (키프레임 값 반영)
+        current_frame = self.timeline_widget.playhead_position
+        self.update_preview(current_frame)
+        
+    def on_keyframe_removed(self, property_name, frame):
+        """키프레임 제거됨"""
+        print(f"[키프레임 제거] {property_name} @ 프레임 {frame}")
+        
+        # 프리뷰 업데이트
+        current_frame = self.timeline_widget.playhead_position
+        self.update_preview(current_frame) 
